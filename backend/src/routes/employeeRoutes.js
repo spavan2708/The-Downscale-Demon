@@ -11,7 +11,9 @@ const employees = [
         role: "Developer",
         shift: "Day Shift",
         workspace: "Feature-Login",
-        overtime: false
+        overtime: false,
+        department: "Engineering",
+        manager: "Arjun"
     },
 
     {
@@ -20,7 +22,9 @@ const employees = [
         role: "Developer",
         shift: "Night Shift",
         workspace: "Feature-Payment",
-        overtime: false
+        overtime: false,
+        department: "Engineering",
+        manager: "Arjun"
     },
 
     {
@@ -29,7 +33,9 @@ const employees = [
         role: "Manager",
         shift: "Flexible",
         workspace: "Management",
-        overtime: true
+        overtime: true,
+        department: "Leadership",
+        manager: "Platform Owner"
     }
 
 ];
