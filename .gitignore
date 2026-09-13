@@ -1,6 +1,29 @@
-node_modules/
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment Variables & Secrets
 .env
-dist/
-build/
-coverage/
+.env.local
+*.env
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS Generated Files
 .DS_Store
+Thumbs.db
+
+# Docker Artifacts
+*.log
