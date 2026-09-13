@@ -1,4 +1,10 @@
 services:
+  redis:
+    image: "redis:alpine"
+    container_name: demon_redis
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: ./backend
@@ -6,6 +12,29 @@ services:
     container_name: demon_backend
     ports:
       - "8000:8000"
+    environment:
+      - AWS_DEFAULT_REGION=us-east-1
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - db_data:/app/db
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: DockerFile
+    container_name: demon_celery
+    command: celery -A scheduler worker --loglevel=info -B
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - db_data:/app/db
+    depends_on:
+      - redis
+      - backend
     restart: unless-stopped
 
   frontend:
@@ -18,3 +47,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  db_data:

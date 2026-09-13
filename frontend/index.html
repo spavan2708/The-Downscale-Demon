@@ -2,102 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>The Downscale Demon - FinOps Dashboard</title>
+  <title>DOWNSCALE DEMON // COMMAND CENTER</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background-color: #f8fafc; color: #0f172a; font-family: monospace; }
+  </style>
 </head>
-<body class="bg-slate-900 text-slate-100 font-sans p-8">
-  <div class="max-w-5xl mx-auto">
-    <header class="border-b border-slate-700 pb-4 mb-6 flex justify-between items-center">
-      <div>
-        <h1 class="text-3xl font-bold text-red-500">THE DOWNSCALE DEMON</h1>
-        <p class="text-sm text-slate-400">Shift-Aware Cloud FinOps & Automated Guardrails Engine</p>
-      </div>
-      <button onclick="fetchInstances()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm font-semibold">Refresh Fleet</button>
-    </header>
-
-    <div class="grid grid-cols-1 gap-4" id="instance-list">
-      <!-- Injected by JavaScript -->
-    </div>
-
-    <div id="log-box" class="mt-8 bg-slate-950 border border-slate-800 rounded p-4 text-xs font-mono text-emerald-400 h-44 overflow-y-auto">
-      [READY] Local AWS In-Memory Engine running. Standing by for policy evaluation...
-    </div>
-  </div>
-
-  <script>
-    function log(msg) {
-      const box = document.getElementById('log-box');
-      box.innerHTML += `<div>> ${msg}</div>`;
-      box.scrollTop = box.scrollHeight;
-    }
-
-    async function fetchInstances() {
-      const res = await fetch('/api/instances');
-      const data = await res.json();
-      const container = document.getElementById('instance-list');
-      container.innerHTML = '';
-
-      data.forEach(inst => {
-        const isRunning = inst.state === 'running';
-        container.innerHTML += `
-          <div class="bg-slate-800 border border-slate-700 p-5 rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-              <div class="flex items-center gap-2">
-                <span class="text-lg font-bold">${inst.name}</span>
-                <span class="text-xs px-2 py-0.5 rounded font-mono ${isRunning ? 'bg-emerald-900 text-emerald-300' : 'bg-rose-900 text-rose-300'}">${inst.state.toUpperCase()}</span>
-                ${inst.exempt ? '<span class="text-xs px-2 py-0.5 rounded bg-amber-900 text-amber-300 font-semibold">FINOPS: EXEMPT</span>' : ''}
-                ${inst.snoozed ? '<span class="text-xs px-2 py-0.5 rounded bg-blue-900 text-blue-300 font-semibold">SNOOZED</span>' : ''}
-              </div>
-              <p class="text-xs text-slate-400 font-mono mt-1">ID: ${inst.id} | Type: ${inst.type}</p>
-            </div>
-
-            <div class="flex flex-wrap gap-2">
-              <button onclick="evaluateInstance('${inst.id}', false)" class="px-3 py-1.5 bg-red-600 hover:bg-red-500 rounded text-xs font-bold">Run Cut-off Check</button>
-              <button onclick="evaluateInstance('${inst.id}', true)" class="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 rounded text-xs font-bold">Simulate Active Build</button>
-              <button onclick="toggleSnooze('${inst.id}')" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs font-bold">Toggle Snooze</button>
-              <button onclick="wakeInstance('${inst.id}')" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded text-xs font-bold">Knock-to-Wake</button>
-            </div>
-          </div>
-        `;
-      });
-    }
-
-    async function evaluateInstance(id, isBusy) {
-      log(`Evaluating downscale policy for ${id} (Active Job Simulation: ${isBusy})...`);
-      const res = await fetch('/api/evaluate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({instance_id: id, is_busy: isBusy})
-      });
-      const data = await res.json();
-      log(`RESULT: [${data.status}] - ${data.reason}` + (data.daily_saved_usd ? ` | Saved: $${data.daily_saved_usd}/day` : ''));
-      fetchInstances();
-    }
-
-    async function wakeInstance(id) {
-      log(`Knock-to-Wake triggered for ${id}...`);
-      const res = await fetch('/api/wake', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({instance_id: id})
-      });
-      const data = await res.json();
-      log(`RESULT: [${data.status}] - ${data.reason}`);
-      fetchInstances();
-    }
-
-    async function toggleSnooze(id) {
-      const res = await fetch('/api/snooze', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({instance_id: id})
-      });
-      const data = await res.json();
-      log(`ChatOps Snooze state changed for ${id}: ${data.snoozed ? 'Active (1 hour)' : 'Disabled'}`);
-      fetchInstances();
-    }
-
-    fetchInstances();
-  </script>
+<body class="p-6 bg-slate-50 text-slate-900 font-mono">
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

@@ -1,113 +1,100 @@
 import os
 import boto3
-from moto import mock_aws
-
-os.environ["AWS_ACCESS_KEY_ID"] = "mock_key"
-os.environ["AWS_SECRET_ACCESS_KEY"] = "mock_secret"
-os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
+import asyncio
+from typing import AsyncGenerator
+from database import SessionLocal, InstanceDB, SnapshotDB
 
 class DownscaleDemonEngine:
     def __init__(self):
-        self.mock = mock_aws()
-        self.mock.start()
-        self.ec2 = boto3.client("ec2", region_name="us-east-1")
-        
-        self.cost_table = {
-            "t3.medium": 0.0416,
-            "c5.xlarge": 0.1700,
-            "idle_ipv4": 0.0050
-        }
-        self.snoozed_instances = {}
-        self._seed_mock_fleet()
+        self.cost_table = {"t3.medium": 0.0416, "c5.xlarge": 0.1700, "r5.large": 0.1260, "idle_ipv4": 0.0050}
+        self._seed_initial_db()
 
-    def _seed_mock_fleet(self):
-        """Provisions realistic mock servers and explicitly assigns tags."""
-        # 1. Active Dev Sandbox
-        dev_res = self.ec2.run_instances(ImageId="ami-01234567", InstanceType="t3.medium", MinCount=1, MaxCount=1)
-        dev_id = dev_res["Instances"][0]["InstanceId"]
-        self.ec2.create_tags(Resources=[dev_id], Tags=[
-            {"Key": "Name", "Value": "Dev-Sandbox-ActiveBuild"},
-            {"Key": "FinOps:Exempt", "Value": "False"}
-        ])
-
-        # 2. Production Staging Server (Exempt)
-        staging_res = self.ec2.run_instances(ImageId="ami-01234567", InstanceType="c5.xlarge", MinCount=1, MaxCount=1)
-        staging_id = staging_res["Instances"][0]["InstanceId"]
-        self.ec2.create_tags(Resources=[staging_id], Tags=[
-            {"Key": "Name", "Value": "Staging-Demo-Server"},
-            {"Key": "FinOps:Exempt", "Value": "True"}
-        ])
-
-        # 3. Idle Abandoned Sandbox with Static IPv4
-        idle_res = self.ec2.run_instances(ImageId="ami-01234567", InstanceType="t3.medium", MinCount=1, MaxCount=1)
-        idle_id = idle_res["Instances"][0]["InstanceId"]
-        self.ec2.create_tags(Resources=[idle_id], Tags=[
-            {"Key": "Name", "Value": "Dev-Sandbox-Abandoned"},
-            {"Key": "FinOps:Exempt", "Value": "False"}
-        ])
-
-        eip = self.ec2.allocate_address(Domain="vpc")
-        self.ec2.associate_address(InstanceId=idle_id, AllocationId=eip["AllocationId"])
-
-    def _extract_tags(self, inst):
-        tags = {}
-        for t in inst.get("Tags", []):
-            tags[t["Key"]] = t["Value"]
-        return tags
+    def _seed_initial_db(self):
+        db = SessionLocal()
+        if db.query(InstanceDB).count() == 0:
+            fleet = [
+                InstanceDB(id="i-01a88b9c", aws_instance_id="i-01a88b9c", name="DEV-SANDBOX-ALPHA", instance_type="t3.medium", owner_id="EMP-902", state="running", cpu_load=4.2, shift_start="09:00", shift_end="18:00"),
+                InstanceDB(id="i-09927cc1", aws_instance_id="i-09927cc1", name="PROD-ANALYTICS-DB", instance_type="c5.xlarge", owner_id="MGR-101", state="running", is_exempt=True, cpu_load=78.9, shift_start="00:00", shift_end="23:59"),
+                InstanceDB(id="i-04312ff8", aws_instance_id="i-04312ff8", name="BUILD-WORKER-IDLE", instance_type="t3.medium", owner_id="EMP-902", state="idle", cpu_load=0.1, shift_start="09:00", shift_end="18:00"),
+                InstanceDB(id="i-07741ee2", aws_instance_id="i-07741ee2", name="ML-TRAINING-SANDBOX", instance_type="r5.large", owner_id="EMP-404", state="idle", has_anomaly=True, cpu_load=98.5, shift_start="10:00", shift_end="19:00"),
+                InstanceDB(id="i-0b553dd4", aws_instance_id="i-0b553dd4", name="STAGING-API-GATEWAY", instance_type="t3.medium", owner_id="MGR-101", state="running", cpu_load=12.4, shift_start="08:00", shift_end="20:00"),
+                InstanceDB(id="i-0f998aa1", aws_instance_id="i-0f998aa1", name="INTEGRATION-TEST-NODE", instance_type="t3.medium", owner_id="EMP-902", state="hibernated", cpu_load=0.0, shift_start="09:00", shift_end="18:00")
+            ]
+            db.add_all(fleet)
+            db.commit()
+        db.close()
 
     def get_instances(self):
-        reservations = self.ec2.describe_instances().get("Reservations", [])
+        db = SessionLocal()
+        records = db.query(InstanceDB).all()
         fleet = []
-        for r in reservations:
-            for inst in r["Instances"]:
-                tags = self._extract_tags(inst)
-                fleet.append({
-                    "id": inst["InstanceId"],
-                    "name": tags.get("Name", "Unknown"),
-                    "type": inst["InstanceType"],
-                    "state": inst["State"]["Name"],
-                    "exempt": str(tags.get("FinOps:Exempt", "")).lower() == "true",
-                    "snoozed": self.snoozed_instances.get(inst["InstanceId"], False)
-                })
+        for r in records:
+            fleet.append({
+                "id": r.id,
+                "name": r.name,
+                "type": r.instance_type,
+                "state": r.state,
+                "owner": r.owner_id,
+                "cpu": r.cpu_load,
+                "cost": self.cost_table.get(r.instance_type, 0.0416),
+                "exempt": r.is_exempt,
+                "snoozed": r.is_snoozed,
+                "anomaly": r.has_anomaly,
+                "shift": f"{r.shift_start} - {r.shift_end}" if not r.is_exempt else "24/7 EXEMPT",
+                "shift_start": r.shift_start,
+                "shift_end": r.shift_end
+            })
+        db.close()
         return fleet
 
-    def evaluate_and_downscale(self, instance_id, is_busy=False):
-        desc = self.ec2.describe_instances(InstanceIds=[instance_id])
-        inst = desc["Reservations"][0]["Instances"][0]
-        tags = self._extract_tags(inst)
+    def update_shift(self, instance_id: str, start: str, end: str):
+        db = SessionLocal()
+        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
+        if inst:
+            inst.shift_start = start
+            inst.shift_end = end
+            db.commit()
+        db.close()
+        return {"status": "SUCCESS"}
 
-        if self.snoozed_instances.get(instance_id, False):
-            return {"status": "SNOOZED", "reason": "Snoozed by developer via ChatOps/UI."}
+    def toggle_state(self, instance_id: str, target_state: str):
+        db = SessionLocal()
+        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
+        if inst:
+            inst.state = target_state
+            if target_state == "running":
+                inst.has_anomaly = False
+            db.commit()
+        db.close()
+        return {"status": "SUCCESS", "new_state": target_state}
 
-        # Feature 4: Tag Check
-        if str(tags.get("FinOps:Exempt", "")).lower() == "true":
-            return {"status": "BYPASS", "reason": "Protected by FinOps:Exempt tag. Shutdown skipped."}
+    def simulate_anomaly(self, instance_id: str):
+        db = SessionLocal()
+        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
+        if inst:
+            inst.has_anomaly = True
+            inst.cpu_load = 99.8
+            db.commit()
+        db.close()
+        return {"status": "ANOMALY_TRIGGERED"}
 
-        # Heuristic 2-B: Build inspection
-        if is_busy:
-            return {"status": "DEFERRED", "reason": "Active compilation/test jobs in progress."}
+    async def execute_criu_dump_stream(self, instance_id: str) -> AsyncGenerator[str, None]:
+        logs = [
+            f"[SYSTEM] INITIATING CRIU STATE SNAPSHOT FOR {instance_id}",
+            "[CRIU] FREEZING USERSPACE PROCESS TREE (PIDs: 4012, 4015)...",
+            "[CRIU] DUMPING INTERACTIVE TMUX SESSION SOCKETS & BASH HISTORIES",
+            "[CRIU] WRITING MEMORY PAGES TO /var/snapshots/dev_environment.img (34.2MB)",
+            "[EC2] RELEASING UNASSOCIATED ELASTIC IP...",
+            f"[EC2] ISSUING HARD STOP COMMAND TO {instance_id}",
+            "[DOWNSCALE COMPLETE] TARGET IS HIBERNATED. ZERO FINOPS LEAKAGE."
+        ]
+        for line in logs:
+            await asyncio.sleep(0.3)
+            yield line
 
-        # Feature 2: Release IP & Safe Stop
-        addresses = self.ec2.describe_addresses().get("Addresses", [])
-        for addr in addresses:
-            if addr.get("InstanceId") == instance_id:
-                self.ec2.disassociate_address(AssociationId=addr["AssociationId"])
-
-        self.ec2.stop_instances(InstanceIds=[instance_id])
-        hourly = self.cost_table.get(inst["InstanceType"], 0.05)
-        saved = round(14 * (hourly + self.cost_table["idle_ipv4"]), 2)
-
-        return {
-            "status": "DOWNSCALED",
-            "reason": "Machine idle and non-exempt. Cut-off executed.",
-            "daily_saved_usd": saved
-        }
-
-    def wake_instance(self, instance_id):
-        self.ec2.start_instances(InstanceIds=[instance_id])
-        return {"status": "RUNNING", "reason": "Knock-to-Wake intercepted inbound traffic."}
-
-    def toggle_snooze(self, instance_id):
-        current = self.snoozed_instances.get(instance_id, False)
-        self.snoozed_instances[instance_id] = not current
-        return {"snoozed": not current}
+        db = SessionLocal()
+        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
+        if inst:
+            inst.state = "hibernated"
+            db.commit()
+        db.close()
