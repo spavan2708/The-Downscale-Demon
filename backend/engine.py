@@ -1,100 +1,60 @@
 import os
-import boto3
-import asyncio
-from typing import AsyncGenerator
-from database import SessionLocal, InstanceDB, SnapshotDB
+import re
+import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from database import SnapshotDB, EventDB
 
-class DownscaleDemonEngine:
-    def __init__(self):
-        self.cost_table = {"t3.medium": 0.0416, "c5.xlarge": 0.1700, "r5.large": 0.1260, "idle_ipv4": 0.0050}
-        self._seed_initial_db()
+RATES = {'t3.medium': 0.0416, 'c5.xlarge': 0.17, 'r5.large': 0.126}
+SNAPSHOT_RATE = float(os.getenv('SNAPSHOT_GB_MONTH_RATE', '0.05'))
 
-    def _seed_initial_db(self):
-        db = SessionLocal()
-        if db.query(InstanceDB).count() == 0:
-            fleet = [
-                InstanceDB(id="i-01a88b9c", aws_instance_id="i-01a88b9c", name="DEV-SANDBOX-ALPHA", instance_type="t3.medium", owner_id="EMP-902", state="running", cpu_load=4.2, shift_start="09:00", shift_end="18:00"),
-                InstanceDB(id="i-09927cc1", aws_instance_id="i-09927cc1", name="PROD-ANALYTICS-DB", instance_type="c5.xlarge", owner_id="MGR-101", state="running", is_exempt=True, cpu_load=78.9, shift_start="00:00", shift_end="23:59"),
-                InstanceDB(id="i-04312ff8", aws_instance_id="i-04312ff8", name="BUILD-WORKER-IDLE", instance_type="t3.medium", owner_id="EMP-902", state="idle", cpu_load=0.1, shift_start="09:00", shift_end="18:00"),
-                InstanceDB(id="i-07741ee2", aws_instance_id="i-07741ee2", name="ML-TRAINING-SANDBOX", instance_type="r5.large", owner_id="EMP-404", state="idle", has_anomaly=True, cpu_load=98.5, shift_start="10:00", shift_end="19:00"),
-                InstanceDB(id="i-0b553dd4", aws_instance_id="i-0b553dd4", name="STAGING-API-GATEWAY", instance_type="t3.medium", owner_id="MGR-101", state="running", cpu_load=12.4, shift_start="08:00", shift_end="20:00"),
-                InstanceDB(id="i-0f998aa1", aws_instance_id="i-0f998aa1", name="INTEGRATION-TEST-NODE", instance_type="t3.medium", owner_id="EMP-902", state="hibernated", cpu_load=0.0, shift_start="09:00", shift_end="18:00")
-            ]
-            db.add_all(fleet)
-            db.commit()
-        db.close()
+def system_now():
+    return datetime.now(ZoneInfo(os.getenv('SHIFT_TIMEZONE', 'UTC')))
 
-    def get_instances(self):
-        db = SessionLocal()
-        records = db.query(InstanceDB).all()
-        fleet = []
-        for r in records:
-            fleet.append({
-                "id": r.id,
-                "name": r.name,
-                "type": r.instance_type,
-                "state": r.state,
-                "owner": r.owner_id,
-                "cpu": r.cpu_load,
-                "cost": self.cost_table.get(r.instance_type, 0.0416),
-                "exempt": r.is_exempt,
-                "snoozed": r.is_snoozed,
-                "anomaly": r.has_anomaly,
-                "shift": f"{r.shift_start} - {r.shift_end}" if not r.is_exempt else "24/7 EXEMPT",
-                "shift_start": r.shift_start,
-                "shift_end": r.shift_end
-            })
-        db.close()
-        return fleet
+def in_shift(instance, now=None):
+    clock = (now or system_now()).strftime('%H:%M')
+    start, end = instance.shift_start, instance.shift_end
+    if instance.is_exempt or instance.is_snoozed or start == end:
+        return True
+    return start <= clock < end if start < end else clock >= start or clock < end
 
-    def update_shift(self, instance_id: str, start: str, end: str):
-        db = SessionLocal()
-        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
-        if inst:
-            inst.shift_start = start
-            inst.shift_end = end
-            db.commit()
-        db.close()
-        return {"status": "SUCCESS"}
+def emit(db, instance_id, event_type='FLEET_UPDATED'):
+    db.add(EventDB(instance_id=instance_id, event_type=event_type))
 
-    def toggle_state(self, instance_id: str, target_state: str):
-        db = SessionLocal()
-        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
-        if inst:
-            inst.state = target_state
-            if target_state == "running":
-                inst.has_anomaly = False
-            db.commit()
-        db.close()
-        return {"status": "SUCCESS", "new_state": target_state}
+def hibernate(db, instance):
+    filename = None
+    if instance.state != 'hibernated':
+        name = re.sub(r'[^A-Za-z0-9_-]', '_', instance.name)
+        filename = f'SNAPSHOT_{name}_{system_now():%Y%m%d}.IMG'
+        db.add(SnapshotDB(id=str(uuid.uuid4()), instance_id=instance.id,
+            filename=filename, size_mb=34.2))
+    instance.state = 'hibernated'
+    instance.cpu_load = 0
+    instance.has_anomaly = False
+    emit(db, instance.id, 'SESSION_TERMINATED')
+    emit(db, instance.id)
+    return filename
 
-    def simulate_anomaly(self, instance_id: str):
-        db = SessionLocal()
-        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
-        if inst:
-            inst.has_anomaly = True
-            inst.cpu_load = 99.8
-            db.commit()
-        db.close()
-        return {"status": "ANOMALY_TRIGGERED"}
+def serialize(instance):
+    return dict(id=instance.id, name=instance.name, type=instance.instance_type,
+        owner=instance.owner_id, state=instance.state, cpu=instance.cpu_load,
+        cost=RATES.get(instance.instance_type, 0) if instance.state in ('running', 'idle') else 0,
+        hourly_rate=RATES.get(instance.instance_type), exempt=instance.is_exempt,
+        snoozed=instance.is_snoozed, anomaly=instance.has_anomaly,
+        shift=f'{instance.shift_start} - {instance.shift_end}',
+        shift_start=instance.shift_start, shift_end=instance.shift_end)
 
-    async def execute_criu_dump_stream(self, instance_id: str) -> AsyncGenerator[str, None]:
-        logs = [
-            f"[SYSTEM] INITIATING CRIU STATE SNAPSHOT FOR {instance_id}",
-            "[CRIU] FREEZING USERSPACE PROCESS TREE (PIDs: 4012, 4015)...",
-            "[CRIU] DUMPING INTERACTIVE TMUX SESSION SOCKETS & BASH HISTORIES",
-            "[CRIU] WRITING MEMORY PAGES TO /var/snapshots/dev_environment.img (34.2MB)",
-            "[EC2] RELEASING UNASSOCIATED ELASTIC IP...",
-            f"[EC2] ISSUING HARD STOP COMMAND TO {instance_id}",
-            "[DOWNSCALE COMPLETE] TARGET IS HIBERNATED. ZERO FINOPS LEAKAGE."
-        ]
-        for line in logs:
-            await asyncio.sleep(0.3)
-            yield line
-
-        db = SessionLocal()
-        inst = db.query(InstanceDB).filter(InstanceDB.id == instance_id).first()
-        if inst:
-            inst.state = "hibernated"
-            db.commit()
-        db.close()
+def analytics(fleet, snapshots):
+    # idle means powered on; stopped/hibernated incur no compute charge.
+    compute = sum(i['cost'] for i in fleet)
+    baseline = sum(RATES.get(i['type'], 0) for i in fleet)
+    storage_gb = sum(s.size_mb for s in snapshots) / 1024
+    storage_month = storage_gb * SNAPSHOT_RATE
+    eligible = [i for i in fleet if not i['exempt']]
+    return dict(compute_hourly=round(compute, 6), compute_daily=round(compute * 24, 6),
+        snapshot_gb=round(storage_gb, 6), snapshot_monthly=round(storage_month, 6),
+        total_daily=round(compute * 24 + storage_month / 30, 6),
+        daily_savings=round((baseline - compute) * 24 - storage_month / 30, 6),
+        downscale_rate=round(100 * sum(i['state'] == 'hibernated' for i in eligible) / len(eligible), 1) if eligible else 0,
+        exempt_nodes=sum(i['exempt'] for i in fleet), currency='USD', billing_basis='current-state projection; 30-day month',
+        snapshot_gb_month_rate=SNAPSHOT_RATE)

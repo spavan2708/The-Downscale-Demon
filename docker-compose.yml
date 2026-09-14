@@ -14,6 +14,8 @@ services:
       - "8000:8000"
     environment:
       - AWS_DEFAULT_REGION=us-east-1
+      - DB_DIR=/app/db
+      - SHIFT_TIMEZONE=Asia/Kolkata
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - db_data:/app/db
@@ -30,6 +32,8 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - AWS_DEFAULT_REGION=us-east-1
+      - DB_DIR=/app/db
+      - SHIFT_TIMEZONE=Asia/Kolkata
     volumes:
       - db_data:/app/db
     depends_on:
