@@ -8,7 +8,7 @@ Protected REST endpoints require `Authorization: Bearer <access_token>`. Roles a
 
 - `POST /api/auth/login`: `{user_id,password}` -> `{success,access_token,token_type,user:{id,name,role,team_id}}`. Authenticates without waking a workspace; tokens expire after eight hours.
 - `GET /api/me`: authenticated user identity.
-- `GET /api/instances`: `{fleet,analytics,snapshots}` within caller scope. Use this to reconcile state after connecting/reconnecting.
+- `GET /api/instances`: `{fleet,analytics,snapshots,demo_available,timezone}` within caller scope. Use this to reconcile state after connecting/reconnecting.
 - `POST /api/login`: `{user_id,password,instance_id?}` authenticates and wakes an owned workspace within shift. Select `instance_id` when several exist (otherwise 409). Returns token/user plus `user_id,instance_id,instance_name,shift`.
 - `POST /api/employees`: Manager/Admin provisioning, atomically creates a user and 1–20 initially hibernated instances. Example:
 
@@ -62,7 +62,7 @@ Pricing references: https://aws.amazon.com/ec2/pricing/on-demand/ and https://do
 
 ## Sign-up update
 
-The login screen now includes Sign Up. Managers/Admins use **Invite to Sign Up** to create a one-use code with a 24-hour expiry.
+The login screen now includes Sign Up. Managers/Admins use **Invite employee** to create a one-use code with a 24-hour expiry.
 
 - `POST /api/invitations` (authenticated management): `{user_id,team_id,role,instances}` -> HTTP 201 `{invitation_token,user_id,expires_at}`; expires_at is Unix seconds. Managers can invite only employees in their own team; admins may invite employees/team leads. Workspace specs match `/api/employees`. Share the code with the intended user; it is returned only at creation.
 - `POST /api/auth/signup` (public): `{invitation_token,user_id,name,password}` -> HTTP 201 `{success,access_token,token_type,user,instance_ids}`. Password length 12–128. Role and team come only from the invitation; extra request fields are rejected. Account, workspaces, session and invitation consumption commit atomically. New workspaces are hibernated.
@@ -74,9 +74,9 @@ See EMPLOYEE_APP_HANDOFF.md for the complete employee-app implementation instruc
 
 `POST /api/auth/signup/chief-architect` accepts `{user_id,name,password}` without an invitation and returns HTTP 201 with the authentication payload. It rejects extra fields and uses a SQLite immediate transaction to serialize first-admin creation. An existing administrator or user ID returns 409. The employee portal exposes this flow; `bootstrap_admin.py` is also available.
 
-The command center is this repository's `frontend/`; the employee portal is a separate sibling project. Both keep tokens in memory. The command center now has responsive fleet cards and owner-aware search. Its WebSocket reconnect uses a fixed 1.5-second retry without focus refresh; the portal uses exponential backoff and focus reconciliation.
+The command center is this repository's `frontend/`; the employee portal is a separate sibling project at `../employee-workspace-portal/`. Both keep tokens in memory. CORS permits localhost:5173. The command center now has responsive fleet cards and owner-aware search. Its WebSocket reconnect uses a fixed 1.5-second retry without focus refresh; the portal uses exponential backoff and focus reconciliation.
 
-See [project status](PROJECT_STATUS.md) for validation performed during the UI/data cleanup. Backend and portal suites were not rerun for the documentation refresh.
+See [project status](PROJECT_STATUS.md) for recorded backend, portal, migration, and browser validation. Documentation-only updates do not rerun those suites.
 
 ## Snapshot/demo API additions
 
@@ -91,3 +91,9 @@ See [project status](PROJECT_STATUS.md) for validation performed during the UI/d
 `simulated_time` is optional; naive values mean the server shift timezone and offset-aware values are converted to it. CPU must be finite and 0-100; activity is `running` or `idle`; extra fields are rejected. Returns `{instance, outcome}`. Updating a stopped/hibernated instance does not wake it. CPU/activity affect powered-on instances. Immediate evaluation hibernates powered-on out-of-shift instances, creates a snapshot, and emits normal termination/fleet events. Disabling demo clears the override and evaluates real shift time.
 
 New filenames use `SNAPSHOT_[name]_[YYYYMMDD_HHMMSS]_[unique suffix].IMG`. Snapshot IDs remain the authoritative identity. Use actual creation time for ordering and display demo time separately. No historical memory-image restore is performed.
+
+## Current client presentation
+
+The vault renders one card per instance. Its dropdown contains every retained snapshot for that instance, ordered newest first by actual creation time, with a filename-derived date fallback for legacy records. The newest snapshot is selected initially; selecting an older record updates its details. Equal or unknown timestamps use a stable snapshot-ID tie-breaker, not an invented capture order. Search matches names, instance IDs, and filenames while preserving each matching workspace's full dropdown history. Grouping does not delete records. Restore wakes the workspace rather than loading the selected historical memory image.
+
+The API remains a flat scoped snapshot list. UUID identifies each record; instance ID identifies each grouped card. Timestamp formatting uses the server timezone. Admin labels are Add employee, Invite employee, Hibernate fleet, and Sign out; their REST contracts are unchanged. The portal's dark theme and admin's larger neutral/green theme use the same API.

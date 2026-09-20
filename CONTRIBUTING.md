@@ -21,6 +21,7 @@ From `backend/`, with dependencies and `httpx` installed, run each suite in a se
 ```powershell
 python -m unittest test_integration -v
 python -m unittest test_chief_signup -v
+python -m unittest test_demo -v
 ```
 
 From the sibling employee portal, use `npm run build` and `npm test` after installing dependencies and Playwright Chromium. Its tests mock API/socket responses; they do not replace live integration checks. For visual changes check desktop/mobile layouts, keyboard access, error/empty states, and appropriate role actions.
@@ -41,6 +42,14 @@ Update the affected Markdown documents when behavior, setup, validation, or oper
 
 ## Snapshot/demo validation
 
-Run `python -m unittest test_demo -v` from `backend/` in its own process, alongside the existing isolated suites. The portal's `tests/demo.spec.js` covers toggling demo, time/CPU submission, immediate termination, snapshot display/search, responsive layout, and disabling the override.
+Run the demo suite listed above in its own process, alongside the existing isolated suites. The portal's `tests/demo.spec.js` covers toggling demo, time/CPU submission, immediate termination, snapshot display/search, responsive layout, and disabling the override.
 
 Preserve real `created_at` timestamps; do not invent legacy times or substitute demo time for wall-clock audit time. Keep `DEMO_MODE` gating, instance authorization, CPU bounds, and shared scheduler/API clock behavior intact. Snapshot card components/styles are duplicated across the two apps and should remain aligned.
+
+## UI conventions
+
+The admin uses `command.css` for the larger sans-serif design and locally bundled styles. Keep action labels readable, use the existing green/neutral palette, and check layouts at desktop, 390px, and 320px. Do not reintroduce the Tailwind CDN. The employee portal keeps its own dark theme and build-time Tailwind.
+
+Keep snapshot component behavior aligned in both repositories: one card per instance, newest-first dropdown, stable IDs, honest legacy dates, and full history retained during search. Admin theme overrides may differ from portal styling. Update API contracts only when server behavior changes; visual grouping does not imply a new restore endpoint.
+
+Document validation by change and distinguish historical test results from checks performed in the current task. Avoid stacking contradictory update notes in project status pages.

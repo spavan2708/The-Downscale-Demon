@@ -6,7 +6,7 @@ Connect the employee app to the existing FastAPI backend at `http://localhost:80
 
 ## Sign up
 
-Add Sign In / Sign Up navigation. Collect `user_id`, `name`, `password` (12–128 characters), and `invitation_token`. Do not ask users to select roles, teams, instance types or shifts.
+Keep the implemented Sign In / Sign Up navigation. Collect `user_id`, `name`, `password` (12–128 characters), and `invitation_token`. Do not ask users to select roles, teams, instance types or shifts.
 
 `POST /api/auth/signup` (no authorization header):
 ```json
@@ -17,7 +17,7 @@ HTTP 201:
 {"success":true,"access_token":"...","token_type":"bearer","user":{"id":"EMP-100","name":"Alex","role":"employee","team_id":"platform"},"instance_ids":["i-..."]}
 ```
 
-Managers/Admins generate codes in the Admin UI using **Invite to Sign Up**. Codes are tied to the intended User ID, expire after 24 hours, and work once. Team/role/workspaces are assigned by the inviter. Signup atomically creates the account and assigned workspaces, which begin hibernated; signup does not wake them. Show the workspace picker after signup.
+Managers/Admins generate codes in the Admin UI using **Invite employee**. Codes are tied to the intended User ID, expire after 24 hours, and work once. Team/role/workspaces are assigned by the inviter. Signup atomically creates the account and assigned workspaces, which begin hibernated; signup does not wake them. Show the workspace picker after signup.
 
 Errors use HTTP status plus `{detail}`: 400 invalid/expired/used/wrong-user invitation, 409 existing User ID, 422 validation errors. Render FastAPI detail arrays as readable field errors. The separate Chief Architect Sign Up form calls `POST /api/auth/signup/chief-architect` with `{user_id,name,password}` and no invitation. It returns 201 only when no administrator exists; otherwise 409. `backend/bootstrap_admin.py` is also available. Ordinary invitation signup cannot grant admin privileges.
 
@@ -25,7 +25,7 @@ Errors use HTTP status plus `{detail}`: 400 invalid/expired/used/wrong-user invi
 
 1. `POST /api/auth/login` with `{user_id,password}` -> same token/user shape (without instance_ids). Login authenticates independently of shift hours.
 2. Hold token in app memory, attach `Authorization: Bearer <access_token>` to authenticated REST requests. Tokens expire after eight hours; on HTTP 401 or WebSocket close 4401 clear session and show login.
-3. `GET /api/me` -> current identity. `GET /api/instances` -> `{fleet,analytics,snapshots}`, already scoped by the server. Use real fleet data; show empty state when no workspaces exist.
+3. `GET /api/me` -> current identity. `GET /api/instances` -> `{fleet,analytics,snapshots,demo_available,timezone}`, already scoped by the server. Use real fleet data; show empty state when no workspaces exist.
 4. Start or restore selected workspace: `POST /api/instance/state` with `{instance_id,target_state:"running"}`. Only open the workspace after HTTP success. HTTP 403 SHIFT LOCKED means stay in the picker and show the server's message.
 5. End workspace: `POST /api/logout` with `{instance_id}`; wait for success before clearing local workspace state. This hibernates it; it does not revoke the account bearer token. On local account sign-out, clear the token and close WebSockets.
 
@@ -45,7 +45,7 @@ Refetch `/api/instances` on FLEET_UPDATED. On SESSION_TERMINATED, immediately cl
 ## Fleet / snapshots / billing
 
 Fleet fields include `id,name,type,owner,state,cpu,cost,hourly_rate,exempt,snoozed,anomaly,shift,shift_start,shift_end`. `cost` is current hourly compute; powered-on idle nodes are billable. Stopped/hibernated nodes have zero compute cost.
-Snapshots contain `id,instance_id,filename,size_mb,tmux_panes`. Render server filenames `SNAPSHOT_[Instance_Name]_[YYYYMMDD].IMG`; use snapshot UUID as React key. CRIU is simulated; no actual download endpoint exists.
+Snapshots contain `id,instance_id,filename,size_mb,tmux_panes,created_at,simulated_at,legacy_date`. New filenames contain date, time, and a unique suffix; display the server filename as supplied. Use instance ID for grouped card keys and snapshot UUID for dropdown options. CRIU is simulated; no actual download endpoint exists.
 
 Use server analytics: `compute_hourly,compute_daily,snapshot_gb,snapshot_monthly,total_daily,daily_savings,downscale_rate,exempt_nodes,currency,billing_basis`. USD current-state projections: compute/day = compute/hour × 24; snapshot/month = retained MiB / 1024 × $0.05; total/day = compute/day + snapshot/month / 30. Do not invent savings or recompute billing from visible cards.
 
@@ -61,7 +61,7 @@ The portal uses React state/refs in `src/App.jsx`, native fetch/WebSocket, and b
 
 The responsive-card redesign applies to `The-Downscale-Demon/frontend/`, not the sibling portal. On 2026-09-20 the shared local Docker database was cleaned of six demo instances and related snapshots/events, preserving employee `001`, both `hail` workspaces, and the administrator. Consume API results normally; do not hardcode these IDs as a permanent allowlist. See [README](README.md) for the backup record.
 
-The acceptance checks above are a checklist, not a claim that they were rerun during the documentation update. The latest update below replaces the hardcoded active-session timezone label with server metadata.
+The acceptance checks above are a checklist, not a claim that they were rerun during the documentation update. The active-session timezone is supplied by the server.
 
 ## Implemented demo and snapshot UX
 
@@ -70,3 +70,9 @@ After authentication, the portal renders `DemoControls` for owned workspaces whe
 The new `SnapshotVault` component replaces the compact retained-snapshot list. Display `created_at` and optional `simulated_at` in the API timezone; null historical times use `legacy_date` plus a time-not-recorded label. Filenames are expandable, and unique references distinguish repeated captures. The portal's active-session timezone now uses the server value rather than hardcoded Asia/Kolkata.
 
 The demo clock is workspace-scoped and fixed until changed/disabled. Do not change token expiry or global machine time. Keep the toggle available before workspace start so users can choose an in-shift clock without waiting.
+
+## Grouped history and UI scope
+
+The vault renders one card per instance. Its dropdown contains every retained snapshot for that instance, ordered newest first by actual creation time, with a filename-derived date fallback for legacy records. The newest snapshot is selected initially; selecting an older record updates its details. Equal or unknown timestamps use a stable snapshot-ID tie-breaker, not an invented capture order. Search matches names, instance IDs, and filenames while preserving each matching workspace's full dropdown history. Grouping does not delete records. Restore wakes the workspace rather than loading the selected historical memory image.
+
+The portal uses a dark snapshot variant with 16px primary text, 14px secondary labels, and 22px workspace headings. The admin's larger neutral/green layout is separate. Demo controls appear above the workspace session view for owned instances when the backend advertises capability; otherwise show the unavailable message rather than silently hiding the feature. Port 5173 is strict. See the [employee README](../employee-workspace-portal/README.md) for setup and stale-page troubleshooting.

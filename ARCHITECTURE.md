@@ -56,4 +56,16 @@ Additive migrations add nullable `snapshots.created_at` / `simulated_at` and `in
 
 `engine.instance_now()` uses the instance's fixed simulated time only when both `DEMO_MODE=1` and `demo_enabled` are true. The shared `in_shift()` function makes REST wake/shift/anomaly checks and Celery use the same effective clock. Actual snapshot creation uses UTC wall time. `POST /api/instance/demo` authorizes the target through `require_instance`, validates CPU/activity/time, persists overrides, emits a fleet event, and can run shift evaluation immediately. It does not grant exemption or snooze privileges.
 
-`components/SnapshotVault.jsx` and its CSS exist in both frontend projects. The portal additionally uses `components/DemoControls.jsx`. They remain separate build artifacts; keep shared snapshot rendering consistent when changing the API.
+`components/SnapshotVault.jsx` and its CSS exist in both frontend projects. The portal additionally uses `components/DemoControls.jsx`. They remain separate build artifacts; keep shared snapshot rendering consistent when changing the API. For employee portal-specific snapshot vault implementation, see `../employee-workspace-portal/ARCHITECTURE.md`.
+
+## Current presentation and snapshot grouping
+
+`command.css` is loaded after fleet and snapshot styles to apply the admin's 18px base type, 16px buttons, responsive header, underlined navigation, shift columns, and savings-first analytics. The employee portal retains its dark Tailwind theme; the admin refresh does not automatically restyle the sibling application. See the employee portal's [Grouped snapshot history](#grouped-snapshot-history) section for portal-specific details.
+
+## Current presentation and snapshot grouping
+
+`command.css` is loaded after fleet and snapshot styles to apply the admin's 18px base type, 16px buttons, responsive header, underlined navigation, shift columns, and savings-first analytics. The employee app retains its dark Tailwind theme; the admin refresh does not automatically restyle the sibling application.
+
+The vault renders one card per instance. Its dropdown contains every retained snapshot for that instance, ordered newest first by actual creation time, with a filename-derived date fallback for legacy records. The newest snapshot is selected initially; selecting an older record updates its details. Equal or unknown timestamps use a stable snapshot-ID tie-breaker, not an invented capture order. Search matches names, instance IDs, and filenames while preserving each matching workspace's full dropdown history. Grouping does not delete records. Restore wakes the workspace rather than loading the selected historical memory image.
+
+The snapshot API still returns a flat list; grouping and selection live in `SnapshotVault.jsx` in each frontend. The admin supplies an `onRestore` callback; the portal displays history and starts workspaces through its own picker. There is no snapshot-ID restore endpoint.

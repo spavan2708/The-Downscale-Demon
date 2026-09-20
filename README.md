@@ -22,7 +22,7 @@ With Docker Desktop and Docker Compose available, run from this repository:
 docker compose up -d --build
 ```
 
-Compose starts Redis, FastAPI, a Celery worker with beat, and the nginx-hosted admin frontend. API and worker share the `db_data` volume at `/app/db`. Compose uses `SHIFT_TIMEZONE=Asia/Kolkata`.
+Compose starts Redis, FastAPI, a Celery worker with beat, and the nginx-hosted admin frontend. API and worker share the `db_data` volume at `/app/db`. Compose uses `SHIFT_TIMEZONE=Asia/Kolkata` and `DEMO_MODE=1` for both API and worker.
 
 For native backend development, create/activate a Python environment, install `backend/requirements.txt`, then run `uvicorn app:app --reload` from `backend/`. Native SQLite defaults to `backend/db/downscale.db`, independently of the Docker volume. Redis and Celery must also run to evaluate scheduled shift cutoffs.
 
@@ -66,6 +66,7 @@ This is a dated local-operation record, not a seed list or a restriction on futu
 - [API integration report](INTEGRATION_REPORT.md)
 - [Employee app handoff](EMPLOYEE_APP_HANDOFF.md)
 - [Contributing](CONTRIBUTING.md)
+- [Employee workspace portal docs](../employee-workspace-portal/README.md)
 
 ## Snapshot vault and demo controls (2026-09-20)
 
@@ -79,10 +80,18 @@ Pre-migration backup: `/app/db/before-snapshot-demo-20260920-040033.db`. Both ex
 
 ## Grouped snapshot history
 
-The vault now shows one card per instance in both apps. A snapshot-history dropdown lists retained captures newest first by actual creation time (legacy records use the known filename date), with the latest selected initially. Selecting an older capture updates the details without creating duplicate workspace cards. Main vault text is 16px, secondary labels are 14px, and workspace headings are 22px. Search matches workspace names, IDs, and filenames while retaining the full history dropdown. No snapshot records are deleted by grouping.
+The vault renders one card per instance. Its dropdown contains every retained snapshot for that instance, ordered newest first by actual creation time, with a filename-derived date fallback for legacy records. The newest snapshot is selected initially; selecting an older record updates its details. Equal or unknown timestamps use a stable snapshot-ID tie-breaker, not an invented capture order. Search matches names, instance IDs, and filenames while preserving each matching workspace's full dropdown history. Grouping does not delete records. Restore wakes the workspace rather than loading the selected historical memory image.
+
+The employee vault uses 16px main text, 14px secondary labels, and 22px workspace headings. The admin theme increases snapshot detail values to 18px and labels to 15px.
 
 ## Command-center visual refresh
 
 The admin UI now uses larger sans-serif text (18px base, 16px action labels), a neutral background, restrained green accents, and responsive spacing. The header uses plain action names; the previous Kill Switch label is now Hibernate fleet with the same behavior. Shifts have dedicated workspace/hour/action columns and overnight guidance. Analytics presents daily savings prominently and separates remaining values with rules rather than individual boxes. Forms, dialogs, fleet cards, and snapshot details follow the same typography. All styles are bundled locally, with no Tailwind CDN dependency.
 
-Validation: production build and Docker frontend rebuild passed; browser checks with mocked API responses exercised all four tabs at 1440px, 390px, and 320px, shift editing, and the provisioning dialog without horizontal overflow or runtime errors. The employee portal design and backend behavior were not changed by this refresh.
+The employee portal retains its dark theme and existing fleet list. The admin visual refresh does not change backend behavior. See [project status](PROJECT_STATUS.md) for recorded verification; this documentation update does not rerun application tests.
+
+## Missing demo controls or stale UI
+
+Open http://localhost:5173 for the employee portal; port 3000 is the admin command center. Use Ctrl + Shift + R if the old snapshot list or older interface remains visible, then sign in again because tokens are held in memory. The portal dev server uses port 5173 with `strictPort: true`, so a port conflict fails instead of silently choosing another port.
+
+Demo controls require an owned workspace and a backend response with `demo_available: true`. The portal shows **Demo controls unavailable** when the connected backend does not advertise this capability. Verify `VITE_API_BASE_URL`, and run the updated backend and worker with `DEMO_MODE=1` (already configured in the main Compose file). Recreate those services after environment/image changes; restarting only the browser cannot enable backend simulation.

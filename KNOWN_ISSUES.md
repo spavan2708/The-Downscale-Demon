@@ -33,6 +33,8 @@ The legacy `/api/login` still combines authentication and workspace wake. New cl
 
 Cluttered command-center fleet metadata, damaged separators, the undefined reset-fleet action, and the six legacy demo instances were addressed. Demo snapshots/events were removed with a backup; see [README](README.md). This cleanup does not restrict future legitimate provisioning.
 
+Portal-specific notes: Demo controls require `DEMO_MODE=1` and an owned workspace with `demo_available: true` (see employee portal [KNOWN_ISSUES.md](../employee-workspace-portal/KNOWN_ISSUES.md)). Admin native development still needs Vite proxy configuration or Docker on port 3000.
+
 ## Snapshot/demo limitations
 
 - Exact legacy snapshot times cannot be recovered from date-only filenames. Existing records display `time not recorded` rather than a guessed timestamp.
@@ -41,3 +43,11 @@ Cluttered command-center fleet metadata, damaged separators, the undefined reset
 - CPU/activity controls apply to powered-on workspaces. They do not wake a hibernated workspace. Set an in-shift clock, then use Start / Restore and apply metrics.
 - CPU >= 90 outside shift is a demo anomaly flag. Current scheduler hibernation is shift-based; memory/network thresholds and CPU-based idle timeouts are not implemented.
 - `DEMO_MODE` defaults off outside Compose. Keep its value consistent between API and worker. Disabling it ignores saved demo clocks; turning a workspace toggle off also clears that workspace's saved override.
+
+## Current UI behavior and remaining gaps
+
+The admin font/layout refresh and grouped snapshot dropdowns are implemented. Admin styling is bundled; CDN availability is no longer a dependency. The employee portal intentionally retains a separate dark theme. The admin's Hibernate fleet action is the previous Kill Switch operation under a clearer label.
+
+Modal dialogs declare dialog semantics, but focus trapping, Escape-to-close, and focus restoration are not implemented. The recent responsive/browser checks do not establish a full accessibility audit.
+
+Snapshots recorded before timestamp support cannot be ordered precisely within the same known date; the dropdown uses a stable ID tie-breaker. Selecting a historical snapshot changes displayed metadata, not which process-memory image is restored. See the [README troubleshooting section](README.md#missing-demo-controls-or-stale-ui) if demo controls or refreshed screens are missing.
