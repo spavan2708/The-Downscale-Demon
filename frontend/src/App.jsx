@@ -1,9 +1,12 @@
-import React, {useState, useEffect} from 'react';
+ï»¿import React, {useState, useEffect} from 'react';
 import {AuthProvider, useAuth} from './context/AppContext';
 import TerminalStream from './components/TerminalStream';
+import InstanceCard from './components/InstanceCard';
+import './fleet.css';
 const button = 'border-2 border-black px-3 py-2 font-bold text-xs bg-white hover:bg-slate-200';
 const input = 'border-2 border-black p-2 w-full text-sm';
 const money = value => Number(value || 0).toFixed(2);
+const STATE_KEYS = ['running', 'hibernated', 'stopped', 'idle'];
 const workspace = () => ({name: '', instance_type: 't3.medium', shift_start: '09:00', shift_end: '18:00'});
 function Dashboard() {
   const {currentUser, token, setSession, api, hasAccess} = useAuth();
@@ -56,7 +59,7 @@ function Dashboard() {
     </form></main>;
   return <main className="max-w-7xl mx-auto space-y-6">
     <header className="border-4 border-black bg-white p-6 flex justify-between gap-4 flex-wrap">
-      <div><h1 className="text-3xl font-black">DOWNSCALE DEMON // FINOPS COMMAND</h1><p>{currentUser.name} · {{employee:'Employee', manager:'Team Lead', admin:'Chief Architect'}[currentUser.role]} · {currentUser.team_id}</p></div>
+      <div><h1 className="text-3xl font-black">DOWNSCALE DEMON // FINOPS COMMAND</h1><p>{currentUser.name} &middot; {{employee:'Employee', manager:'Team Lead', admin:'Chief Architect'}[currentUser.role]} &middot; {currentUser.team_id}</p></div>
       <div className="flex gap-2">
         {hasAccess('manager') && <button className={button} onClick={() => {setInviteMode(false); setProvision({user_id:'', name:'', password:'', team_id:currentUser.team_id || '', role:'employee', instances:[workspace()]});}}>ADD EMPLOYEE + WORKSPACE</button>}
         {hasAccess('manager') && <button className={button} onClick={() => {setInviteMode(true); setProvision({user_id:'',name:'',password:'',team_id:currentUser.team_id || '',role:'employee',instances:[workspace()]});}}>INVITE TO SIGN UP</button>}
@@ -67,18 +70,14 @@ function Dashboard() {
     {error && <p role="alert" className="bg-red-100 p-4 text-red-800">{error}</p>}
     {notice && <p role="status" className="bg-amber-100 p-4">{notice}</p>}
     <nav className="flex gap-2">{['fleet','shifts','vault','analytics'].map(t => <button key={t} className={`${button} ${tab === t ? 'bg-red-200' : ''}`} onClick={() => setTab(t)}>{t.toUpperCase()}</button>)}</nav>
-    {tab === 'fleet' && <section className="space-y-4"><input aria-label="Filter fleet" className={input} placeholder="Filter instance name or ID" value={search} onChange={e => setSearch(e.target.value)}/>
+    {tab === 'fleet' && <section className="space-y-4"><input aria-label="Filter fleet" className={input} placeholder="Search by workspace, instance ID or owner" value={search} onChange={e => setSearch(e.target.value)}/>
       {!fleet.length && <p>No allocated workspaces.</p>}
-      {fleet.filter(i => `${i.name} ${i.id}`.toLowerCase().includes(search.toLowerCase())).map(i => <article key={i.id} className="bg-white border-2 border-black p-5 flex justify-between gap-4 flex-wrap">
-        <div><h2 className="font-black text-lg">{i.name} · {i.state.toUpperCase()}</h2><p>{i.id} · {i.owner} · {i.type} · CPU {i.cpu}% · {i.shift}</p>{i.anomaly && <strong className="text-red-700">OFF-HOURS THREAT</strong>}</div>
-        <div className="flex gap-2">
-          {i.state !== 'running' && <button disabled={busy} className={button} onClick={() => state(i.id,'running')}>WAKE</button>}
-          {hasAccess('manager') && ['running','idle'].includes(i.state) && <button className={button} onClick={() => setDump(i.id)}>CRIU PURGE</button>}
-          {['running','idle'].includes(i.state) && <button disabled={busy} className={button} onClick={() => perform(async () => {const result = await post('/api/instance/anomaly-simulate',{instance_id:i.id}); setNotice(result.context); await fetchFleet();})}>TEST ANOMALY</button>}
-        </div></article>)}
+      <div className="fleet-summary"><div><h2>Workspaces</h2><p>{fleet.length} allocated &middot; {fleet.filter(i => i.state === 'running').length} running &middot; {fleet.filter(i => i.state === 'hibernated').length} hibernated</p></div></div>
+      <div className="fleet-grid">{[...fleet].sort((a, b) => STATE_KEYS.indexOf(a.state) - STATE_KEYS.indexOf(b.state)).filter(i => `${i.name} ${i.id} ${i.owner}`.toLowerCase().includes(search.toLowerCase())).map(i => <InstanceCard key={i.id} instance={i} busy={busy} canManage={hasAccess('manager')} onWake={() => state(i.id, 'running')} onPurge={() => setDump(i.id)} onAnomaly={() => perform(async () => {const result = await post('/api/instance/anomaly-simulate', {instance_id:i.id}); setNotice(result.context); await fetchFleet();})}/>)}</div>
+      {!!fleet.length && !fleet.some(i => `${i.name} ${i.id} ${i.owner}`.toLowerCase().includes(search.toLowerCase())) && <p className="fleet-empty">No workspaces match your search.</p>}
     </section>}
-    {tab === 'shifts' && <section className="bg-white border-2 border-black p-6 space-y-4"><h2 className="font-black">SHIFT SCHEDULES (configured server timezone)</h2>{fleet.map(i => <div key={i.id} className="flex justify-between border-b p-2"><span>{i.owner} · {i.name} · {i.shift}{i.exempt ? ' · EXEMPT' : ''}</span>{hasAccess('manager') && !i.exempt && <button className={button} onClick={() => setEditing({instance_id:i.id,shift_start:i.shift_start,shift_end:i.shift_end})}>EDIT SHIFT</button>}</div>)}</section>}
-    {tab === 'vault' && <section className="grid grid-cols-1 md:grid-cols-2 gap-4">{!snapshots.length && <p>No stored snapshots.</p>}{snapshots.map(s => <article key={s.id} className="bg-white border-2 border-black p-5"><h2 className="font-black break-all">{s.filename}</h2><p>{s.instance_id} · {s.size_mb} MiB · {s.tmux_panes} tmux panes</p><button disabled={busy} className={button} onClick={() => state(s.instance_id,'running')}>RESTORE SESSION</button></article>)}</section>}
+    {tab === 'shifts' && <section className="bg-white border-2 border-black p-6 space-y-4"><h2 className="font-black">SHIFT SCHEDULES (configured server timezone)</h2>{fleet.map(i => <div key={i.id} className="flex justify-between border-b p-2"><span>{i.owner} &middot; {i.name} &middot; {i.shift}{i.exempt ? ' - EXEMPT' : ''}</span>{hasAccess('manager') && !i.exempt && <button className={button} onClick={() => setEditing({instance_id:i.id,shift_start:i.shift_start,shift_end:i.shift_end})}>EDIT SHIFT</button>}</div>)}</section>}
+    {tab === 'vault' && <section className="grid grid-cols-1 md:grid-cols-2 gap-4">{!snapshots.length && <p>No stored snapshots.</p>}{snapshots.map(s => <article key={s.id} className="bg-white border-2 border-black p-5"><h2 className="font-black break-all">{s.filename}</h2><p>{s.instance_id} &middot; {s.size_mb} MiB &middot; {s.tmux_panes} tmux panes</p><button disabled={busy} className={button} onClick={() => state(s.instance_id,'running')}>RESTORE SESSION</button></article>)}</section>}
     {tab === 'analytics' && <section className="bg-white border-2 border-black p-6"><p>USD estimates at current fleet state; 30-day month. Idle instances remain powered on. Snapshot storage remains billed after restore.</p><div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">{[['COMPUTE / HOUR',`$${money(analytics.compute_hourly)}`],['COMPUTE / DAY',`$${money(analytics.compute_daily)}`],['SNAPSHOTS / MONTH',`$${money(analytics.snapshot_monthly)}`],['NET DAILY SAVINGS',`$${money(analytics.daily_savings)}`],['DOWNSCALE RATE',`${analytics.downscale_rate || 0}%`],['EXEMPT NODES',analytics.exempt_nodes || 0]].map(([label,value]) => <div key={label} className="border-2 border-black p-5"><p>{label}</p><strong className="text-3xl">{value}</strong></div>)}</div></section>}
     {editing && <Modal title="Update shift" close={() => setEditing(null)}><form className="space-y-4" onSubmit={e => {e.preventDefault(); perform(async () => {await post('/api/shift/update',editing); setEditing(null); await fetchFleet();});}}>{['shift_start','shift_end'].map(key => <label key={key} className="block">{key}<input required type="time" className={input} value={editing[key]} onChange={e => setEditing({...editing,[key]:e.target.value})}/></label>)}<p>Equal boundaries mean 24 hours; overnight shifts are supported.</p><p role="alert" className="text-red-700">{error}</p><button disabled={busy} className={button}>SAVE</button></form></Modal>}
     {provision && <Modal title={inviteMode ? "Invite user and allocate workspaces" : "Provision employee and workspaces"} close={() => setProvision(null)}><form className="space-y-3" onSubmit={e => {e.preventDefault(); perform(async () => {if (inviteMode) {const {name,password,...invitation} = provision; setCreatedInvite(await post('/api/invitations',invitation));} else {await post('/api/employees',provision);} setProvision(null); await fetchFleet();});}}>
@@ -93,3 +92,4 @@ function Dashboard() {
 }
 function Modal({title,close,children}) {return <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"><section role="dialog" aria-modal="true" aria-label={title} className="bg-white border-4 border-black p-6 max-w-lg w-full max-h-[90vh] overflow-auto"><div className="flex justify-between mb-4"><h2 className="font-black">{title}</h2><button className={button} onClick={close}>CLOSE</button></div>{children}</section></div>;}
 export default function App() {return <AuthProvider><Dashboard/></AuthProvider>;}
+

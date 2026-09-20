@@ -1,38 +1,24 @@
-import React from 'react';
-import { useAuth } from '../context/AppContext';
+﻿import React from 'react';
 
-export default function InstanceCard({ instance, onPurge }) {
-  const { currentUser, hasAccess } = useAuth();
-  const isIdle = instance.state === 'idle';
-
-  return (
-    <div className={`p-4 border-[1px] font-mono flex justify-between items-center ${isIdle ? 'border-red-600 bg-red-950/20' : 'border-white/20 bg-black'}`}>
-      <div>
-        <div className="flex gap-3 items-center">
-          <h3 className={`text-lg font-bold ${isIdle ? 'text-red-500 animate-pulse' : 'text-white'}`}>{instance.name}</h3>
-          <span className="text-[10px] px-2 py-0.5 border border-white/40">{instance.type}</span>
-        </div>
-        <p className="text-xs text-white/50 mt-1">ID: {instance.id} | OWNER: {instance.owner} | CPU: {instance.cpu}%</p>
-      </div>
-
-      <div className="flex gap-2">
-        {/* Employees can wake their assigned instance */}
-        {(hasAccess('employee') && instance.owner === currentUser.id) && (
-          <button className="px-3 py-1.5 border border-white text-white text-xs font-bold hover:bg-white hover:text-black">
-            [ WAKE ]
-          </button>
-        )}
-
-        {/* Managers and Admins can trigger state preservation & cut-off */}
-        {hasAccess('manager') && (
-          <button 
-            onClick={() => onPurge(instance.id)}
-            className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold border border-red-600 hover:bg-white hover:text-red-600"
-          >
-            [ C-R-I-U DUMP & PURGE ]
-          </button>
-        )}
-      </div>
-    </div>
-  );
+export default function InstanceCard({instance, busy, canManage, onWake, onPurge, onAnomaly}) {
+  const active = ['running', 'idle'].includes(instance.state);
+  const cpu = Math.max(0, Math.min(100, Number(instance.cpu) || 0));
+  return <article className="workspace-card">
+    <header className="workspace-heading">
+      <div><h3>{instance.name}</h3><p className="workspace-id">{instance.id}</p></div>
+      <span className={`workspace-status status-${instance.state}`}>{instance.state}</span>
+    </header>
+    <dl className="workspace-details">
+      <div><dt>Employee ID</dt><dd>{instance.owner}</dd></div>
+      <div><dt>Machine type</dt><dd>{instance.type}</dd></div>
+      <div><dt>Shift hours</dt><dd>{instance.shift}</dd></div>
+      <div><dt>CPU usage</dt><dd>{cpu}%<meter min="0" max="100" value={cpu} aria-label={`${instance.name} CPU usage`}/></dd></div>
+    </dl>
+    {(instance.anomaly || instance.exempt) && <div className="workspace-flags">{instance.anomaly && <span className="workspace-alert">Off-hours threat</span>}{instance.exempt && <span>Exempt from automatic hibernation</span>}</div>}
+    <footer className="workspace-actions">
+      {instance.state !== 'running' && <button disabled={busy} className="workspace-button primary" onClick={onWake}>Wake workspace</button>}
+      {canManage && active && <button disabled={busy} className="workspace-button" onClick={onPurge}>CRIU purge</button>}
+      {active && <button disabled={busy} className="workspace-button" onClick={onAnomaly}>Test anomaly</button>}
+    </footer>
+  </article>;
 }
