@@ -16,6 +16,7 @@ services:
       - AWS_DEFAULT_REGION=us-east-1
       - DB_DIR=/app/db
       - SHIFT_TIMEZONE=Asia/Kolkata
+      - DEMO_MODE=1
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - db_data:/app/db
@@ -34,6 +35,7 @@ services:
       - AWS_DEFAULT_REGION=us-east-1
       - DB_DIR=/app/db
       - SHIFT_TIMEZONE=Asia/Kolkata
+      - DEMO_MODE=1
     volumes:
       - db_data:/app/db
     depends_on:

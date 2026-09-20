@@ -30,6 +30,8 @@ class InstanceDB(Base):
     cpu_load = Column(Float, default=0)
     shift_start = Column(String, default='09:00')
     shift_end = Column(String, default='18:00')
+    demo_enabled = Column(Boolean, default=False)
+    demo_time = Column(String, nullable=True)
 
 class SnapshotDB(Base):
     __tablename__ = 'snapshots'
@@ -38,6 +40,8 @@ class SnapshotDB(Base):
     filename = Column(String)
     size_mb = Column(Float)
     tmux_panes = Column(Integer, default=2)
+    created_at = Column(String, nullable=True)
+    simulated_at = Column(String, nullable=True)
 
 class SessionDB(Base):
     __tablename__ = 'sessions'
@@ -62,12 +66,19 @@ class InvitationDB(Base):
     used = Column(Boolean, default=False)
 
 Base.metadata.create_all(engine)
-# Additive migration: legacy users remain locked until credentials/team are assigned.
+# Serialize additive SQLite migrations across the API and scheduler processes.
 with engine.begin() as connection:
-    columns = {c['name'] for c in inspect(connection).get_columns('users')}
-    for column in ('team_id', 'password_hash'):
-        if column not in columns:
-            connection.execute(text(f'ALTER TABLE users ADD COLUMN {column} VARCHAR'))
+    connection.execute(text('BEGIN IMMEDIATE'))
+    additions = {
+        'users': {'team_id': 'VARCHAR', 'password_hash': 'VARCHAR'},
+        'instances': {'demo_enabled': 'BOOLEAN DEFAULT 0', 'demo_time': 'VARCHAR'},
+        'snapshots': {'created_at': 'VARCHAR', 'simulated_at': 'VARCHAR'},
+    }
+    for table, fields in additions.items():
+        columns = {c['name'] for c in inspect(connection).get_columns(table)}
+        for column, sql_type in fields.items():
+            if column not in columns:
+                connection.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {sql_type}'))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():

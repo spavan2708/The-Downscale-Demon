@@ -32,7 +32,7 @@ USD current-state projections, not historical invoices or live AWS price quotes.
 - daily_savings = (all-allocated-instance hourly baseline - compute_hourly) × 24 - snapshot_monthly / 30.
 - downscale_rate = hibernated non-exempt instances / all non-exempt instances × 100; empty denominator gives zero.
 
-Snapshots remain billable after wake. CRIU is simulated; each new hibernation records 34.2 MiB, independently retained (no incremental block deduplication). Filenames: `SNAPSHOT_[sanitized Instance_Name]_[YYYYMMDD].IMG`; UUID snapshot IDs distinguish repeated dumps. EC2 ancillary charges and live metered usage are outside this estimate.
+Snapshots remain billable after wake. CRIU is simulated; each new hibernation records 34.2 MiB, independently retained (no incremental block deduplication). Legacy filenames: `SNAPSHOT_[sanitized Instance_Name]_[YYYYMMDD].IMG`; new captures also include time and a unique suffix; UUID snapshot IDs distinguish repeated dumps. EC2 ancillary charges and live metered usage are outside this estimate.
 
 ## WebSockets
 
@@ -77,3 +77,17 @@ See EMPLOYEE_APP_HANDOFF.md for the complete employee-app implementation instruc
 The command center is this repository's `frontend/`; the employee portal is a separate sibling project. Both keep tokens in memory. The command center now has responsive fleet cards and owner-aware search. Its WebSocket reconnect uses a fixed 1.5-second retry without focus refresh; the portal uses exponential backoff and focus reconciliation.
 
 See [project status](PROJECT_STATUS.md) for validation performed during the UI/data cleanup. Backend and portal suites were not rerun for the documentation refresh.
+
+## Snapshot/demo API additions
+
+`GET /api/instances` adds `demo_available` and `timezone` at the top level. Fleet items add `demo_enabled`, `demo_time`, and `timezone`. Snapshot items add `created_at` (UTC ISO timestamp or null for legacy), `simulated_at` (offset-aware demo timestamp or null), and `legacy_date` (filename-derived date or null).
+
+`POST /api/instance/demo` requires bearer authentication, authorized instance scope, and server `DEMO_MODE=1` (otherwise 403). Request:
+
+```json
+{"instance_id":"i-...","enabled":true,"simulated_time":"2026-09-20T18:00","cpu":99.8,"activity":"running","evaluate_now":true}
+```
+
+`simulated_time` is optional; naive values mean the server shift timezone and offset-aware values are converted to it. CPU must be finite and 0-100; activity is `running` or `idle`; extra fields are rejected. Returns `{instance, outcome}`. Updating a stopped/hibernated instance does not wake it. CPU/activity affect powered-on instances. Immediate evaluation hibernates powered-on out-of-shift instances, creates a snapshot, and emits normal termination/fleet events. Disabling demo clears the override and evaluates real shift time.
+
+New filenames use `SNAPSHOT_[name]_[YYYYMMDD_HHMMSS]_[unique suffix].IMG`. Snapshot IDs remain the authoritative identity. Use actual creation time for ordering and display demo time separately. No historical memory-image restore is performed.

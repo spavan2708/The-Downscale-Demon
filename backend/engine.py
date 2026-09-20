@@ -1,7 +1,7 @@
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from database import SnapshotDB, EventDB
 
@@ -11,8 +11,30 @@ SNAPSHOT_RATE = float(os.getenv('SNAPSHOT_GB_MONTH_RATE', '0.05'))
 def system_now():
     return datetime.now(ZoneInfo(os.getenv('SHIFT_TIMEZONE', 'UTC')))
 
+def demo_available():
+    return os.getenv('DEMO_MODE', '0') == '1'
+
+def instance_now(instance):
+    if demo_available() and instance.demo_enabled and instance.demo_time:
+        return datetime.fromisoformat(instance.demo_time)
+    return system_now()
+
+def snapshot_payload(snapshot):
+    # Legacy snapshots never stored a timestamp. Only the filename date is known.
+    match = re.search(r'_(\d{8})\.IMG$', snapshot.filename or '')
+    legacy_date = None
+    if match:
+        try:
+            legacy_date = datetime.strptime(match.group(1), '%Y%m%d').date().isoformat()
+        except ValueError:
+            pass
+    return dict(id=snapshot.id, instance_id=snapshot.instance_id, filename=snapshot.filename,
+                size_mb=snapshot.size_mb, tmux_panes=snapshot.tmux_panes,
+                created_at=snapshot.created_at, simulated_at=snapshot.simulated_at,
+                legacy_date=legacy_date)
+
 def in_shift(instance, now=None):
-    clock = (now or system_now()).strftime('%H:%M')
+    clock = (now or instance_now(instance)).strftime('%H:%M')
     start, end = instance.shift_start, instance.shift_end
     if instance.is_exempt or instance.is_snoozed or start == end:
         return True
@@ -25,9 +47,12 @@ def hibernate(db, instance):
     filename = None
     if instance.state != 'hibernated':
         name = re.sub(r'[^A-Za-z0-9_-]', '_', instance.name)
-        filename = f'SNAPSHOT_{name}_{system_now():%Y%m%d}.IMG'
+        captured = datetime.now(timezone.utc)
+        effective = instance_now(instance)
+        filename = f'SNAPSHOT_{name}_{effective:%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}.IMG'
         db.add(SnapshotDB(id=str(uuid.uuid4()), instance_id=instance.id,
-            filename=filename, size_mb=34.2))
+            filename=filename, size_mb=34.2, created_at=captured.isoformat(),
+            simulated_at=effective.isoformat() if demo_available() and instance.demo_enabled and instance.demo_time else None))
     instance.state = 'hibernated'
     instance.cpu_load = 0
     instance.has_anomaly = False
@@ -42,7 +67,10 @@ def serialize(instance):
         hourly_rate=RATES.get(instance.instance_type), exempt=instance.is_exempt,
         snoozed=instance.is_snoozed, anomaly=instance.has_anomaly,
         shift=f'{instance.shift_start} - {instance.shift_end}',
-        shift_start=instance.shift_start, shift_end=instance.shift_end)
+        shift_start=instance.shift_start, shift_end=instance.shift_end,
+        timezone=os.getenv('SHIFT_TIMEZONE', 'UTC'),
+        demo_enabled=bool(demo_available() and instance.demo_enabled),
+        demo_time=instance.demo_time if demo_available() and instance.demo_enabled else None)
 
 def analytics(fleet, snapshots):
     # idle means powered on; stopped/hibernated incur no compute charge.

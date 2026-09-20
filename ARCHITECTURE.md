@@ -42,10 +42,18 @@ CRIU is a simulation that records snapshot metadata and streams terminal text; i
 
 ## Frontend structure
 
-The command center uses `frontend/src/App.jsx` for tabs, forms, fleet fetching, and actions. `context/AppContext.jsx` owns in-memory authentication and fetch helpers. `components/InstanceCard.jsx` and `fleet.css` implement the responsive fleet cards. `TerminalStream.jsx` displays simulated purge logs. Other command-center styling uses the Tailwind CDN loaded in `frontend/index.html`.
+The command center uses `frontend/src/App.jsx` for tabs, forms, fleet fetching, and actions. `context/AppContext.jsx` owns in-memory authentication and fetch helpers. `components/InstanceCard.jsx` and `fleet.css` implement the responsive fleet cards. `TerminalStream.jsx` displays simulated purge logs. `command.css` supplies the command-center layout, typography, forms, and dialogs. All admin styling is bundled locally; the Tailwind CDN dependency has been removed.
 
 The employee portal is a separate React app using local state/refs in its own `src/App.jsx`, native fetch/WebSocket, and build-time Tailwind. Neither current app uses React Router or React Query. Both keep access tokens in memory, not localStorage.
 
 ## Persistence and deployment
 
 Docker backend and worker share `/app/db`; native development uses `backend/db` unless configured otherwise. These are separate databases. The September 20 cleanup changed only the running Docker data and did not add deletion-on-startup behavior. See [README](README.md) for the backup and retained records.
+
+## Snapshot timestamps and demo clock
+
+Additive migrations add nullable `snapshots.created_at` / `simulated_at` and `instances.demo_enabled` / `demo_time`. Startup serializes migrations with SQLite `BEGIN IMMEDIATE`. Legacy snapshot timestamps remain null; the API extracts only a date from old filenames.
+
+`engine.instance_now()` uses the instance's fixed simulated time only when both `DEMO_MODE=1` and `demo_enabled` are true. The shared `in_shift()` function makes REST wake/shift/anomaly checks and Celery use the same effective clock. Actual snapshot creation uses UTC wall time. `POST /api/instance/demo` authorizes the target through `require_instance`, validates CPU/activity/time, persists overrides, emits a fleet event, and can run shift evaluation immediately. It does not grant exemption or snooze privileges.
+
+`components/SnapshotVault.jsx` and its CSS exist in both frontend projects. The portal additionally uses `components/DemoControls.jsx`. They remain separate build artifacts; keep shared snapshot rendering consistent when changing the API.

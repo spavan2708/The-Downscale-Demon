@@ -1,3 +1,6 @@
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import asyncio
 import json
 import hashlib
@@ -12,7 +15,7 @@ from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from database import SessionLocal, UserDB, InstanceDB, SnapshotDB, SessionDB, EventDB, InvitationDB
 from auth import current_user, authenticate, password_hash, verify_password, visible_query, require_instance
-from engine import RATES, serialize, analytics, in_shift, hibernate, emit
+from engine import RATES, serialize, analytics, in_shift, hibernate, emit, demo_available, snapshot_payload
 
 app = FastAPI(title='The Downscale Demon API')
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000', 'http://127.0.0.1:3000'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
@@ -158,7 +161,47 @@ def read_instances(user=Depends(current_user)):
         records = visible_query(db, user).all()
         snapshots = db.query(SnapshotDB).filter(SnapshotDB.instance_id.in_([i.id for i in records])).all()
         fleet = [serialize(i) for i in records]
-        return dict(fleet=fleet, analytics=analytics(fleet, snapshots), snapshots=[dict(id=s.id, instance_id=s.instance_id, filename=s.filename, size_mb=s.size_mb, tmux_panes=s.tmux_panes) for s in snapshots])
+        return dict(fleet=fleet, analytics=analytics(fleet, snapshots),
+                    demo_available=demo_available(), timezone=os.getenv('SHIFT_TIMEZONE', 'UTC'),
+                    snapshots=[snapshot_payload(s) for s in snapshots])
+
+class DemoRequest(TargetRequest):
+    model_config = {'extra': 'forbid'}
+    enabled: bool
+    simulated_time: datetime | None = None
+    cpu: float = Field(default=4.2, ge=0, le=100, allow_inf_nan=False)
+    activity: Literal['running', 'idle'] = 'running'
+    evaluate_now: bool = False
+
+@app.post('/api/instance/demo')
+def configure_demo(req: DemoRequest, user=Depends(current_user)):
+    if not demo_available():
+        raise HTTPException(403, 'Demo controls are disabled on this server')
+    with SessionLocal() as db:
+        inst = require_instance(db, user, req.instance_id)
+        clock = req.simulated_time
+        if clock:
+            zone = ZoneInfo(os.getenv('SHIFT_TIMEZONE', 'UTC'))
+            clock = clock.replace(tzinfo=zone) if clock.tzinfo is None else clock.astimezone(zone)
+        inst.demo_enabled = req.enabled
+        inst.demo_time = clock.isoformat() if req.enabled and clock else None
+        powered = inst.state in ('running', 'idle')
+        if powered:
+            inst.cpu_load = req.cpu if req.enabled else 4.2
+            inst.state = req.activity if req.enabled else 'running'
+        inst.has_anomaly = bool(powered and req.enabled and req.cpu >= 90 and not in_shift(inst))
+        outcome = 'Demo settings applied' if req.enabled else 'Demo disabled; real server clock restored'
+        if (req.evaluate_now or not req.enabled) and powered:
+            if not in_shift(inst):
+                hibernate(db, inst)
+                outcome = 'Outside shift: workspace hibernated and snapshot recorded'
+            else:
+                outcome = 'Inside shift or exempt: workspace remains powered on'
+        elif not powered:
+            outcome += '. Workspace remains hibernated/stopped; use Start / Restore to wake it'
+        emit(db, inst.id)
+        db.commit()
+        return dict(instance=serialize(inst), outcome=outcome)
 
 @app.post('/api/employees', status_code=201)
 def provision(req: EmployeeRequest, user=Depends(current_user)):

@@ -66,3 +66,23 @@ This is a dated local-operation record, not a seed list or a restriction on futu
 - [API integration report](INTEGRATION_REPORT.md)
 - [Employee app handoff](EMPLOYEE_APP_HANDOFF.md)
 - [Contributing](CONTRIBUTING.md)
+
+## Snapshot vault and demo controls (2026-09-20)
+
+Navigation tabs and snapshot cards now use bundled styles. Both frontends show searchable snapshot cards with creation time, demo time when used, size, panes, and a unique reference. Existing snapshots have only the filename date; their exact time is marked as not recorded. New snapshots store actual UTC `created_at`, optional offset-aware `simulated_at`, and a timestamp/unique-suffix filename.
+
+The employee portal shows **Demo controls** after login for owned workspaces when the server advertises `demo_available`. Compose enables `DEMO_MODE=1` for both API and worker; native processes default to disabled. Select a workspace, enable the toggle, enter a date/time in the displayed server timezone, and apply. Use an in-shift time before Start / Restore. On a powered-on workspace, CPU and running/idle controls take effect immediately. **Apply & evaluate now** runs the shift cutoff without waiting for the scheduler.
+
+The demo clock is fixed until changed and persists per workspace until disabled. Authentication/invitation expiry and actual snapshot creation time use real time. Turning demo off clears its clock, resets powered-on CPU/activity, and evaluates the real shift. Idle is still billable; CPU is not a scheduler cutoff threshold. Demo CPU >= 90 outside shift flags an anomaly. Exempt/snoozed workspaces continue to bypass shift cutoff.
+
+Pre-migration backup: `/app/db/before-snapshot-demo-20260920-040033.db`. Both existing workspaces, two users, and four legacy snapshots were preserved; no live workspace was enabled for demo by the update.
+
+## Grouped snapshot history
+
+The vault now shows one card per instance in both apps. A snapshot-history dropdown lists retained captures newest first by actual creation time (legacy records use the known filename date), with the latest selected initially. Selecting an older capture updates the details without creating duplicate workspace cards. Main vault text is 16px, secondary labels are 14px, and workspace headings are 22px. Search matches workspace names, IDs, and filenames while retaining the full history dropdown. No snapshot records are deleted by grouping.
+
+## Command-center visual refresh
+
+The admin UI now uses larger sans-serif text (18px base, 16px action labels), a neutral background, restrained green accents, and responsive spacing. The header uses plain action names; the previous Kill Switch label is now Hibernate fleet with the same behavior. Shifts have dedicated workspace/hour/action columns and overnight guidance. Analytics presents daily savings prominently and separates remaining values with rules rather than individual boxes. Forms, dialogs, fleet cards, and snapshot details follow the same typography. All styles are bundled locally, with no Tailwind CDN dependency.
+
+Validation: production build and Docker frontend rebuild passed; browser checks with mocked API responses exercised all four tabs at 1440px, 390px, and 320px, shift editing, and the provisioning dialog without horizontal overflow or runtime errors. The employee portal design and backend behavior were not changed by this refresh.

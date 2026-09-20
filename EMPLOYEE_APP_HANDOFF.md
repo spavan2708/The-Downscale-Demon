@@ -61,4 +61,12 @@ The portal uses React state/refs in `src/App.jsx`, native fetch/WebSocket, and b
 
 The responsive-card redesign applies to `The-Downscale-Demon/frontend/`, not the sibling portal. On 2026-09-20 the shared local Docker database was cleaned of six demo instances and related snapshots/events, preserving employee `001`, both `hail` workspaces, and the administrator. Consume API results normally; do not hardcode these IDs as a permanent allowlist. See [README](README.md) for the backup record.
 
-The acceptance checks above are a checklist, not a claim that they were rerun during the documentation update. The portal's active-session timezone label is still hardcoded; see its KNOWN_ISSUES.md.
+The acceptance checks above are a checklist, not a claim that they were rerun during the documentation update. The latest update below replaces the hardcoded active-session timezone label with server metadata.
+
+## Implemented demo and snapshot UX
+
+After authentication, the portal renders `DemoControls` for owned workspaces when `demo_available` is true. It offers the per-workspace toggle, server-timezone date/time input, CPU percentage, running/idle selection, shift-boundary/CPU presets, and immediate evaluation. Apply settings through `/api/instance/demo`, then refetch fleet. If the active instance returns hibernated/stopped, close its session immediately. Standard fleet events continue to reconcile both apps.
+
+The new `SnapshotVault` component replaces the compact retained-snapshot list. Display `created_at` and optional `simulated_at` in the API timezone; null historical times use `legacy_date` plus a time-not-recorded label. Filenames are expandable, and unique references distinguish repeated captures. The portal's active-session timezone now uses the server value rather than hardcoded Asia/Kolkata.
+
+The demo clock is workspace-scoped and fixed until changed/disabled. Do not change token expiry or global machine time. Keep the toggle available before workspace start so users can choose an in-shift clock without waiting.

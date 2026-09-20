@@ -1,4 +1,4 @@
-﻿.fleet-summary { display: flex; justify-content: space-between; margin: 24px 0 16px; }
+.fleet-summary { display: flex; justify-content: space-between; margin: 24px 0 16px; }
 .fleet-summary h2 { font-size: 22px; font-weight: 800; margin: 0 0 6px; }
 .fleet-summary p { color: #64748b; font-size: 13px; }
 .fleet-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
@@ -26,3 +26,9 @@
 .fleet-empty { padding: 32px; text-align: center; color: #64748b; }
 @media (max-width: 760px) { .fleet-grid { grid-template-columns: 1fr; } .workspace-heading { flex-wrap: wrap; } }
 @media (max-width: 380px) { .workspace-details { grid-template-columns: 1fr; } }
+
+.command-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; margin: 24px 0; background: #e2e8f0; border-radius: 10px; }
+.command-tabs button { padding: 12px 20px; border: 0; border-radius: 6px; background: transparent; color: #475569; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.command-tabs button.is-active { color: #fff; background: #0f172a; box-shadow: 0 1px 3px #0f172a20; }
+.command-tabs button:hover:not(.is-active) { background: #f8fafc; }
+.command-tabs button:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }

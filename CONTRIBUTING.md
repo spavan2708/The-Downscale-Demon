@@ -38,3 +38,9 @@ docker compose up -d --build --no-deps frontend
 ```
 
 Update the affected Markdown documents when behavior, setup, validation, or operational data changes. Keep API contracts in [INTEGRATION_REPORT.md](INTEGRATION_REPORT.md) and employee lifecycle guidance in [EMPLOYEE_APP_HANDOFF.md](EMPLOYEE_APP_HANDOFF.md).
+
+## Snapshot/demo validation
+
+Run `python -m unittest test_demo -v` from `backend/` in its own process, alongside the existing isolated suites. The portal's `tests/demo.spec.js` covers toggling demo, time/CPU submission, immediate termination, snapshot display/search, responsive layout, and disabling the override.
+
+Preserve real `created_at` timestamps; do not invent legacy times or substitute demo time for wall-clock audit time. Keep `DEMO_MODE` gating, instance authorization, CPU bounds, and shared scheduler/API clock behavior intact. Snapshot card components/styles are duplicated across the two apps and should remain aligned.

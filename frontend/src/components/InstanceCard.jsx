@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 
 export default function InstanceCard({instance, busy, canManage, onWake, onPurge, onAnomaly}) {
   const active = ['running', 'idle'].includes(instance.state);
@@ -14,7 +14,7 @@ export default function InstanceCard({instance, busy, canManage, onWake, onPurge
       <div><dt>Shift hours</dt><dd>{instance.shift}</dd></div>
       <div><dt>CPU usage</dt><dd>{cpu}%<meter min="0" max="100" value={cpu} aria-label={`${instance.name} CPU usage`}/></dd></div>
     </dl>
-    {(instance.anomaly || instance.exempt) && <div className="workspace-flags">{instance.anomaly && <span className="workspace-alert">Off-hours threat</span>}{instance.exempt && <span>Exempt from automatic hibernation</span>}</div>}
+    {(instance.anomaly || instance.exempt || instance.demo_enabled) && <div className="workspace-flags">{instance.demo_enabled && <span>Demo active{instance.demo_time ? ` / ${instance.demo_time.slice(0,16).replace('T', ' ')} ${instance.timezone || ''}` : ' / real clock'}</span>}{instance.anomaly && <span className="workspace-alert">Off-hours threat</span>}{instance.exempt && <span>Exempt from automatic hibernation</span>}</div>}
     <footer className="workspace-actions">
       {instance.state !== 'running' && <button disabled={busy} className="workspace-button primary" onClick={onWake}>Wake workspace</button>}
       {canManage && active && <button disabled={busy} className="workspace-button" onClick={onPurge}>CRIU purge</button>}

@@ -11,5 +11,5 @@ export default function TerminalStream({instanceId,onClose}) {
     ws.onerror = () => setLogs(previous => [...previous,'Connection failed. Check fleet state before retrying.']);
     return () => ws.close();
   },[instanceId,token]);
-  return <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-8"><section role="dialog" aria-modal="true" aria-label="CRIU terminal" className="bg-white border-4 border-black p-6 max-w-4xl w-full"><button onClick={onClose} className="border-2 p-2 float-right">DISMISS</button><h2 className="font-black">SIMULATED CRIU MEMORY DUMP</h2><div role="log" className="mt-6 font-mono text-sm">{logs.map((line,i) => <p key={i}>{line}</p>)}</div></section></div>;
+  return <div className="modal-backdrop"><section role="dialog" aria-modal="true" aria-label="CRIU terminal" className="command-modal terminal-modal"><button onClick={onClose} className="command-button terminal-close">DISMISS</button><h2 className="dialog-title">SIMULATED CRIU MEMORY DUMP</h2><div role="log" className="terminal-log">{logs.map((line,i) => <p key={i}>{line}</p>)}</div></section></div>;
 }

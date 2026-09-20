@@ -7,7 +7,6 @@ Reviewed against local source on 2026-09-20.
 | Area | Current behavior | Follow-up |
 | --- | --- | --- |
 | Admin native development | Relative API/socket URLs use the Vite origin, but `vite.config.js` has no backend proxy | Add `/api` and `/ws` proxying or use Docker on port 3000 |
-| Admin styling | Most existing screens depend on an external Tailwind CDN; fleet cards have bundled CSS | Bundle shared styles for a self-contained deployment |
 | Admin live updates | Reconnect uses a fixed 1.5-second timer; no page-focus refresh; incoming JSON is parsed without a guard | Add backoff, reconciliation and defensive parsing |
 | Admin request lifecycle | In-flight fleet requests are not cancelled and may complete after session changes | Guard stale responses |
 | Admin errors | Structured FastAPI errors are JSON-stringified | Render readable field messages, as the employee portal does |
@@ -33,3 +32,12 @@ The legacy `/api/login` still combines authentication and workspace wake. New cl
 ## Resolved on 2026-09-20
 
 Cluttered command-center fleet metadata, damaged separators, the undefined reset-fleet action, and the six legacy demo instances were addressed. Demo snapshots/events were removed with a backup; see [README](README.md). This cleanup does not restrict future legitimate provisioning.
+
+## Snapshot/demo limitations
+
+- Exact legacy snapshot times cannot be recovered from date-only filenames. Existing records display `time not recorded` rather than a guessed timestamp.
+- Restore wakes a workspace; simulated CRIU does not restore a selected memory image.
+- Demo settings persist per workspace until disabled and are visible to authorized users. The regular scheduler still evaluates every 30 seconds; use immediate evaluation to skip that delay.
+- CPU/activity controls apply to powered-on workspaces. They do not wake a hibernated workspace. Set an in-shift clock, then use Start / Restore and apply metrics.
+- CPU >= 90 outside shift is a demo anomaly flag. Current scheduler hibernation is shift-based; memory/network thresholds and CPU-based idle timeouts are not implemented.
+- `DEMO_MODE` defaults off outside Compose. Keep its value consistent between API and worker. Disabling it ignores saved demo clocks; turning a workspace toggle off also clears that workspace's saved override.
