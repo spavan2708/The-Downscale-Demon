@@ -49,6 +49,9 @@ class EmployeeRequest(BaseModel):
     role: Literal['employee', 'manager'] = 'employee'
     instances: list[WorkspaceRequest] = Field(min_length=1, max_length=20)
 
+class AddWorkspacesRequest(BaseModel):
+    instances: list[WorkspaceRequest] = Field(min_length=1, max_length=20)
+
 def user_payload(user):
     return dict(id=user.id, name=user.name, role=user.role, team_id=user.team_id)
 
@@ -224,6 +227,25 @@ def provision(req: EmployeeRequest, user=Depends(current_user)):
             db.rollback()
             raise HTTPException(409, 'User ID already exists')
         return dict(user=user_payload(employee), instance_ids=ids)
+
+@app.post('/api/employees/{user_id}/workspaces', status_code=201)
+def add_workspaces(user_id: str, req: AddWorkspacesRequest, user=Depends(current_user)):
+    if user.role not in ('manager', 'admin'):
+        raise HTTPException(403, 'Team Lead or Chief Architect required')
+    with SessionLocal() as db:
+        employee = db.get(UserDB, user_id)
+        if not employee:
+            raise HTTPException(404, 'Employee not found')
+        if user.role == 'manager' and (not user.team_id or employee.team_id != user.team_id):
+            raise HTTPException(403, 'Team Leads may add workspaces only to employees within their assigned team')
+        ids = []
+        for spec in req.instances:
+            identifier = 'i-' + uuid.uuid4().hex[:17]
+            db.add(InstanceDB(id=identifier, aws_instance_id=identifier, owner_id=user_id, name=spec.name, instance_type=spec.instance_type, shift_start=spec.shift_start, shift_end=spec.shift_end))
+            ids.append(identifier)
+            emit(db, identifier)
+        db.commit()
+        return dict(instance_ids=ids)
 
 @app.post('/api/shift/update')
 def update_shift(req: ShiftUpdateRequest, user=Depends(current_user)):

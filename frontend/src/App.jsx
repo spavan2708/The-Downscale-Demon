@@ -18,7 +18,7 @@ function Dashboard() {
   const [signupMode, setSignupMode] = useState(false), [signupDetails, setSignupDetails] = useState({name: '', invitation_token: ''});
   const [inviteMode, setInviteMode] = useState(false), [createdInvite, setCreatedInvite] = useState(null);
   const [credentials, setCredentials] = useState({user_id: '', password: ''});
-  const [provision, setProvision] = useState(null), [editing, setEditing] = useState(null), [dump, setDump] = useState(null);
+  const [provision, setProvision] = useState(null), [editing, setEditing] = useState(null), [dump, setDump] = useState(null), [addWorkspaces, setAddWorkspaces] = useState(null);
   const [busy, setBusy] = useState(false), [search, setSearch] = useState('');
   const fetchFleet = async () => {
     const data = await api('/api/instances');
@@ -75,7 +75,12 @@ function Dashboard() {
     <nav className="command-tabs" aria-label="Command center sections">{['fleet','shifts','vault','analytics'].map(t => <button key={t} className={tab === t ? 'is-active' : ''} aria-current={tab === t ? 'page' : undefined} onClick={() => setTab(t)}>{{fleet:'Fleet',shifts:'Shifts',vault:'Snapshot vault',analytics:'Analytics'}[t]}</button>)}</nav>
     {tab === 'fleet' && <section className="fleet-section"><input aria-label="Filter fleet" className={input} placeholder="Search by workspace, instance ID or owner" value={search} onChange={e => setSearch(e.target.value)}/>
       {!fleet.length && <p>No allocated workspaces.</p>}
-      <div className="fleet-summary"><div><h2>Workspaces</h2><p>{fleet.length} allocated &middot; {fleet.filter(i => i.state === 'running').length} running &middot; {fleet.filter(i => i.state === 'hibernated').length} hibernated</p></div></div>
+      <div className="fleet-summary"><div><h2>Workspaces</h2><p>{fleet.length} allocated &middot; {fleet.filter(i => i.state === 'running').length} running &middot; {fleet.filter(i => i.state === 'hibernated').length} hibernated</p></div>
+        {hasAccess('manager') && <button className={button} onClick={() => {
+          const employees = [...new Set(fleet.map(i => i.owner))].filter(o => o !== currentUser.id);
+          if (!employees.length) return;
+          setAddWorkspaces({user_id: employees[0], instances: [workspace()]});
+        }}>Add workspace to employee</button>}</div>
       <div className="fleet-grid">{[...fleet].sort((a, b) => STATE_KEYS.indexOf(a.state) - STATE_KEYS.indexOf(b.state)).filter(i => `${i.name} ${i.id} ${i.owner}`.toLowerCase().includes(search.toLowerCase())).map(i => <InstanceCard key={i.id} instance={i} busy={busy} canManage={hasAccess('manager')} onWake={() => state(i.id, 'running')} onPurge={() => setDump(i.id)} onAnomaly={() => perform(async () => {const result = await post('/api/instance/anomaly-simulate', {instance_id:i.id}); setNotice(result.context); await fetchFleet();})}/>)}</div>
       {!!fleet.length && !fleet.some(i => `${i.name} ${i.id} ${i.owner}`.toLowerCase().includes(search.toLowerCase())) && <p className="fleet-empty">No workspaces match your search.</p>}
     </section>}
@@ -103,6 +108,11 @@ function Dashboard() {
       <p role="alert" className="field-error">{error}</p><button type="button" className={button} disabled={provision.instances.length >= 20} onClick={() => setProvision({...provision,instances:[...provision.instances,workspace()]})}>ADD WORKSPACE</button><button disabled={busy} className={button}>{inviteMode ? "CREATE INVITATION" : "CREATE"}</button>
     </form></Modal>}
     {createdInvite && <Modal title="Share sign-up invitation" close={() => setCreatedInvite(null)}><p>Send this User ID and code to the intended user. The code expires in 24 hours and works once.</p><p className="form-note">User ID: {createdInvite.user_id}</p><label className="form-note">Invitation code<input readOnly className={input} value={createdInvite.invitation_token} onFocus={e => e.target.select()}/></label></Modal>}
+    {addWorkspaces && <Modal title="Add workspaces to employee" close={() => setAddWorkspaces(null)}><form className="space-y-3" onSubmit={e => {e.preventDefault(); perform(async () => {await post(`/api/employees/${addWorkspaces.user_id}/workspaces`, {instances: addWorkspaces.instances}); setAddWorkspaces(null); await fetchFleet();});}}>
+      <label className="block">Employee<select className={input} value={addWorkspaces.user_id} onChange={e => setAddWorkspaces({...addWorkspaces, user_id: e.target.value})}>{[...new Set(fleet.map(i => i.owner))].filter(o => o !== currentUser.id).map(id => <option key={id} value={id}>{id}</option>)}</select></label>
+      {addWorkspaces.instances.map((spec,index) => <fieldset key={index} className="workspace-fields"><legend>Workspace {index+1}</legend>{Object.keys(spec).map(key => <label key={key} className="block">{{name:'Workspace name',instance_type:'Machine type',shift_start:'Shift start',shift_end:'Shift end'}[key]}{key === 'instance_type' ? <select className={input} value={spec[key]} onChange={e => setAddWorkspaces({...addWorkspaces,instances:addWorkspaces.instances.map((s,j) => j === index ? {...s,[key]:e.target.value} : s)})}>{['t3.medium','c5.xlarge','r5.large'].map(t => <option key={t}>{t}</option>)}</select> : <input required type={key.startsWith('shift') ? 'time' : 'text'} className={input} value={spec[key]} onChange={e => setAddWorkspaces({...addWorkspaces,instances:addWorkspaces.instances.map((s,j) => j === index ? {...s,[key]:e.target.value} : s)})}/>}</label>)}</fieldset>)}
+      <p role="alert" className="field-error">{error}</p><button type="button" className={button} disabled={addWorkspaces.instances.length >= 20} onClick={() => setAddWorkspaces({...addWorkspaces,instances:[...addWorkspaces.instances,workspace()]})}>ADD WORKSPACE</button><button disabled={busy} className={button}>CREATE</button>
+    </form></Modal>}
     {dump && <TerminalStream instanceId={dump} onClose={() => {setDump(null); perform(fetchFleet);}}/>}
   </main>;
 }
