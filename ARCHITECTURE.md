@@ -59,8 +59,8 @@ Compose leaves AWS operations disabled. When explicitly enabled, the backend's `
 | 1 | Edge Proxy & Buffering | Accept HTTP traffic for an unavailable workspace, enqueue bounded request envelopes in SQS, trigger/observe warm-up, and replay with request/response correlation when readiness is confirmed. |
 | 2 | State Preservation & Hydration | Start the assigned EC2 instance, attach checkpoint EBS storage, validate checkpoint/runtime compatibility, restore RAM and terminal history with CRIU, attempt compatible socket restoration, then report readiness to the edge. |
 | 3 | Shift RBAC & Anomaly Guard | Enforce the Employee -> Team Lead -> Chief Architect role hierarchy and shift window for lifecycle operations; inspect off-hours CPU/RAM signals and isolate an anomalous workspace. |
-| 4 | Safe Downscale & Storage Unmount | Stop accepting new work, pause/close file descriptors, quiesce processes, flush locks, create and verify a checkpoint, unmount/detach EBS safely, then call AWS SDK `ec2.stop_instances`. |
-| 5 | FinOps Analytics Engine | Compare active resource usage with the configured 24x7 baseline in near real time, calculate estimated savings/credits, and publish metric updates to authorized clients over WebSockets. |
+| 4 | Safe Downscale & Storage Unmount | Stop accepting new work, quiesce processes through the configured CRIU operation, flush storage, create the checkpoint, confirm unmount/detach, then call AWS SDK `ec2.stop_instances`. |
+| 5 | FinOps Analytics Engine | Compare tracked active runtime with the configured 24x7 baseline, calculate modeled compute avoidance, and publish runtime and metric updates to authorized clients over WebSockets. |
 
 Lifecycle envelopes carry workspace and request correlation IDs and expiration; SQS message retention, redrive policy, idempotent replay, client timeout, and duplicate-delivery behavior must be configured and verified in AWS. Each lifecycle stage reports failure instead of signaling readiness or shutdown success prematurely. AWS credentials and role assignments must remain server-side.
 
@@ -70,22 +70,22 @@ Lifecycle envelopes carry workspace and request correlation IDs and expiration; 
 | --- | --- |
 | `backend/app.py` | REST routes, provisioning, invitations, WebSocket authentication and streaming |
 | `backend/auth.py` | PBKDF2 password hashes, opaque bearer sessions, role and instance authorization |
-| `backend/database.py` | SQLAlchemy models, SQLite setup, additive legacy-user migrations |
-| `backend/engine.py` | Shift rules, simulated or gated AWS lifecycle operations, CRIU/EBS metadata, request proxying, serialization and billing estimates |
+| `backend/database.py` | SQLAlchemy models, SQLite setup, additive migrations, state interval and actor-attributed event records |
+| `backend/engine.py` | Shift rules, observed runtime/cost summaries, simulated or gated AWS lifecycle operations, CRIU/EBS metadata, request proxying and serialization |
 | `backend/scheduler.py` | Celery shift evaluation and gated CloudWatch anomaly polling every 30 seconds |
 | `backend/bootstrap_admin.py` | Interactive administrator provisioning |
 
-Tables: users, instances, snapshots, sessions, events, invitations. Session and invitation tokens are stored as SHA-256 hashes. Sessions expire after eight hours; invitations after 24 hours. Invitation redemption uses a conditional unused/unexpired UPDATE in the same transaction as account and workspace creation. First-admin signup uses SQLite `BEGIN IMMEDIATE`.
+Tables: users, instances, snapshots, sessions, events, invitations, support requests, announcements, and runtime intervals. Session and invitation tokens are stored as SHA-256 hashes. Sessions expire after eight hours; invitations after 24 hours. Invitation redemption uses a conditional unused/unexpired UPDATE in the same transaction as account and workspace creation. First-admin signup uses SQLite `BEGIN IMMEDIATE`. Runtime tracking starts at migration time for pre-existing instances; historical runtime is not inferred.
 
 ## Authorization and synchronization
 
 Admins see all instances, managers see instances owned by users in their assigned team, and employees see their own. REST requests carry `Authorization: Bearer <token>`. WebSockets receive the token in the first JSON frame within ten seconds. Invalid/expired socket credentials close with 4401.
 
-`GET /api/instances` returns scoped fleet, snapshots, and analytics. Transactional events drive `FLEET_UPDATED` and targeted `SESSION_TERMINATED`; the fleet socket polls persisted events every 500 ms. Reconnection requires a fresh fleet fetch because historical events are not replayed. See [integration report](INTEGRATION_REPORT.md) for endpoint contracts.
+`GET /api/instances` returns scoped fleet, snapshots, and analytics. Team Leads and Chief Architects also use `/api/governance/overview` for team-scoped workforce controls, pending support requests, audit events, runtime intervals, and cost summaries. Access blocking deletes sessions and prevents future authentication; authorized sockets close when their token is revalidated. Chief Architect workspace deletion confirms the exact name and, with AWS enabled, detaches but retains EBS data before terminating EC2. Transactional events drive `FLEET_UPDATED` and targeted `SESSION_TERMINATED`; the fleet socket polls persisted events every 500 ms. A global fleet update after deletion prompts both clients to refetch. See [integration report](INTEGRATION_REPORT.md) for endpoint contracts.
 
 ## Shift and billing behavior
 
-The backend uses `SHIFT_TIMEZONE` (UTC default; Asia/Kolkata in Compose). Boundaries are start-inclusive/end-exclusive, overnight shifts are supported, and equal boundaries mean 24 hours. Exempt or snoozed instances bypass shift restrictions. Updating a shift hibernates a powered-on instance if it falls outside the new window.
+The backend uses `SHIFT_TIMEZONE` (UTC default; Asia/Kolkata in Compose). Boundaries are start-inclusive/end-exclusive, overnight shifts are supported, and equal boundaries mean 24 hours. Exempt or snoozed instances bypass shift restrictions. Updating a shift hibernates a powered-on instance if it falls outside the new window. State transitions close a persisted runtime interval and begin a new one; totals classify isolated/running/idle as active and stopped/hibernated as hibernated. The scheduler stores CloudWatch CPU/memory observations separately. Rate-based lifetime avoided compute is modeled savings, not AWS-issued credits or a billing-ledger result.
 
 With AWS disabled, CRIU remains a simulation that records metadata and streams terminal text. With AWS enabled, remote CRIU dump/restore runs through SSM against the configured process and attached checkpoint volume; it requires a compatible OS/kernel/CRIU, sufficient SSM permissions, a supported process tree, and verified device/mount configuration. Compute estimates include running, idle, and isolated instances. Rates can be supplied using `EC2_HOURLY_RATES_JSON`; there is no live AWS Price List or Cost Explorer ingestion, and projected savings are not awarded credits.
 
@@ -93,7 +93,7 @@ With AWS disabled, CRIU remains a simulation that records metadata and streams t
 
 The command center uses `frontend/src/App.jsx` for tabs, forms, fleet fetching, and actions. `context/AppContext.jsx` owns in-memory authentication and fetch helpers. `components/InstanceCard.jsx` and `fleet.css` implement the responsive fleet cards. `TerminalStream.jsx` displays simulated purge logs. `command.css` supplies the command-center layout, typography, forms, and dialogs. All admin styling is bundled locally; the Tailwind CDN dependency has been removed.
 
-The employee portal is a separate React app using local state/refs in its own `src/App.jsx`, native fetch/WebSocket, and build-time Tailwind. Neither current app uses React Router or React Query. Both keep access tokens in memory, not localStorage.
+The employee portal is a separate React app. `../The-Downscale-Client/src/context/AppContext.jsx` owns in-memory authentication, REST access, fleet refresh, WebSocket reconnect, ping/pong latency, telemetry, and inbox refresh signals; `src/App.jsx` renders the employee station and its feature views. The admin command center uses `frontend/src/components/GovernanceDashboard.jsx` for the executive summary, fleet matrix/resource/cost charts, employee lockout and overtime controls, and audit history. Its styling is maintained separately from the employee app. Neither app uses React Router or React Query. Both keep access tokens in memory, not localStorage.
 
 ## Persistence and deployment
 
@@ -109,11 +109,7 @@ Additive migrations add nullable `snapshots.created_at` / `simulated_at` and `in
 
 ## Current presentation and snapshot grouping
 
-`command.css` is loaded after fleet and snapshot styles to apply the admin's 18px base type, 16px buttons, responsive header, underlined navigation, shift columns, and savings-first analytics. The employee portal retains its dark Tailwind theme; the admin refresh does not automatically restyle the sibling application. See the employee portal's [Grouped snapshot history](#grouped-snapshot-history) section for portal-specific details.
-
-## Current presentation and snapshot grouping
-
-`command.css` is loaded after fleet and snapshot styles to apply the admin's 18px base type, 16px buttons, responsive header, underlined navigation, shift columns, and savings-first analytics. The employee app retains its dark Tailwind theme; the admin refresh does not automatically restyle the sibling application.
+`command.css` is loaded after fleet and snapshot styles to apply the admin's 18px base type, 16px buttons, responsive header, underlined navigation, shift columns, and savings-first analytics. The employee station has a separate responsive dark theme and employee-focused navigation; admin styles are not shared with it. See the employee portal's [architecture](../The-Downscale-Client/ARCHITECTURE.md) for its components, API context, and live-data behavior.
 
 The vault renders one card per instance. Its dropdown contains every retained snapshot for that instance, ordered newest first by actual creation time, with a filename-derived date fallback for legacy records. The newest snapshot is selected initially; selecting an older record updates its details. Equal or unknown timestamps use a stable snapshot-ID tie-breaker, not an invented capture order. Search matches names, instance IDs, and filenames while preserving each matching workspace's full dropdown history. Grouping does not delete records. Restore wakes the workspace rather than loading the selected historical memory image.
 

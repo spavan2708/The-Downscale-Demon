@@ -1,7 +1,7 @@
 /* Command center: generous type, quiet surfaces, clear divisions. */
-:root { font-family: 'Segoe UI', Arial, sans-serif; color: #232822; background: #f6f5f1; font-synthesis: none; }
+:root { font-family: 'Segoe UI', Arial, sans-serif; color: #232822; background: #fcfbf9; font-synthesis: none; }
 * { box-sizing: border-box; }
-body { margin: 0; font-size: 18px; line-height: 1.55; }
+body { margin: 0; font-size: 18px; line-height: 1.55; background: #fcfbf9; }
 h1,h2,h3,p { margin: 0; }
 button,input,select { font: inherit; }
 button { cursor: pointer; }

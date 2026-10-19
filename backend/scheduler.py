@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime, timezone
 
 from celery import Celery
 from database import SessionLocal, InstanceDB
@@ -36,13 +37,16 @@ def evaluate_shifts():
                 cpu = metrics['cpu']
                 if cpu is not None:
                     instance.cpu_load = cpu
+                instance.memory_usage_mb = metrics.get('memory_mb')
+                instance.memory_percent = metrics.get('memory_percent')
+                instance.telemetry_updated_at = datetime.now(timezone.utc).isoformat()
                 outside_shift = not in_shift(instance)
-                memory = metrics['memory']
+                memory = metrics.get('memory_percent')
                 if outside_shift and (
                     (cpu is not None and cpu > 85)
                     or (memory is not None and memory > 85)
                 ):
-                    alert_message = isolate_instance(instance, memory)
+                    alert_message = isolate_instance(db, instance, memory)
                     emit(db, instance.id, 'SESSION_TERMINATED')
                     emit(db, instance.id)
                     db.commit()

@@ -56,7 +56,7 @@ def authenticate(token):
     with SessionLocal() as db:
         session = db.get(SessionDB, hashlib.sha256(token.encode()).hexdigest())
         user = db.get(UserDB, session.user_id) if session and session.expires_at > time.time() else None
-        if not user:
+        if not user or user.access_blocked:
             raise HTTPException(401, 'Invalid or expired session')
         db.expunge(user)
         return user

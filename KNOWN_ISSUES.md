@@ -1,6 +1,6 @@
 # Known issues and limitations
 
-Reviewed against local source on 2026-09-20.
+Reviewed against local source on 2026-10-19.
 
 ## Five-step lifecycle mitigations and remaining validation
 
@@ -18,12 +18,18 @@ This roadmap does not make arbitrary HTTP requests replay-safe, guarantee restor
 | Area | Current behavior | Follow-up |
 | --- | --- | --- |
 | Admin native development | Relative API/socket URLs use the Vite origin, but `vite.config.js` has no backend proxy | Add `/api` and `/ws` proxying or use Docker on port 3000 |
-| Admin live updates | Reconnect uses a fixed 1.5-second timer; no page-focus refresh; incoming JSON is parsed without a guard | Add backoff, reconciliation and defensive parsing |
+| Admin live updates | Reconnect uses a fixed 1.5-second timer and does not refresh on page focus | Add backoff and focus reconciliation |
 | Admin request lifecycle | In-flight fleet requests are not cancelled and may complete after session changes | Guard stale responses |
 | Admin errors | Structured FastAPI errors are JSON-stringified | Render readable field messages, as the employee portal does |
+| Governance runtime | Database runtime intervals begin at migration time for existing instances and record API/scheduler-observed transitions; earlier runtime is not reconstructed, and out-of-band EC2 state changes are not an authoritative billed-uptime record | Reconcile with AWS state observations and AWS Cost and Usage data before treating hours or savings as billing-grade |
+| FinOps credits | The executive dashboard's preserved-credit number is configured-rate avoided compute, not actual AWS promotional credits or invoice savings; managed cost charts omit ancillary charges | Reconcile with billing exports and keep projected savings distinct from credit balances |
+| Workspace termination | The new endpoint detaches and retains EBS volumes while terminating EC2; AWS termination behavior is mock-tested only | Confirm retention/deletion policy, IAM permissions, and detach/termination failure recovery in an isolated AWS account |
+| Employee lockout | Session revocation is immediate and persists if a downscale fails; the API surfaces a 503 with affected workspace details in that case | Review the failure, confirm the account remains blocked, and retry downscale after remediation |
 | Production transport | Compose configures HTTP/WS, with no TLS termination | Configure HTTPS/WSS before public deployment |
 | Snapshot/restore transport | Local mode remains simulated; the opt-in SSM/CRIU path has only mocked lifecycle tests and no live compatibility validation | Verify SSM permissions, kernel/CRIU support, process/socket behavior, mount mapping, image integrity, and recovery before production |
-| Account sign-out | Clients clear memory; `/api/logout` hibernates a workspace but does not revoke the bearer token | Add revocation if required |
+| Employee session inspection | The portal can request SSM process/tmux inspection only when AWS lifecycle is enabled; local mode returns unavailable, not a remote shell | Validate SSM permissions/identity and explicitly scope any future interactive terminal transport |
+| Employee inbox and telemetry | Helpdesk/announcement data is persisted and scoped, while telemetry depends on scheduler observations and CloudWatch Agent memory metrics | Exercise authorization and event refresh on a deployed API; verify real CPU/memory samples and freshness |
+| Account sign-out | Client sign-out clears local memory; workspace `/api/logout` hibernates a workspace but does not revoke the account bearer token. Governance lockout separately revokes all stored sessions | Add user-initiated server-side token revocation if required |
 | Database scale | Backend and worker share SQLite; contention under load has not been characterized here | Load-test and evaluate migration when warranted |
 
 The confirmed limitations above describe the current default/local behavior and unvalidated production boundaries. See [project status](PROJECT_STATUS.md) for the step-by-step AWS implementation gaps and credit-tier readiness checklist.
@@ -59,7 +65,7 @@ Portal-specific notes: Demo controls require `DEMO_MODE=1` and an owned workspac
 
 ## Current UI behavior and remaining gaps
 
-The admin font/layout refresh and grouped snapshot dropdowns are implemented. Admin styling is bundled; CDN availability is no longer a dependency. The employee portal intentionally retains a separate dark theme. The admin's Hibernate fleet action is the previous Kill Switch operation under a clearer label.
+The executive governance dashboard, state-colored fleet matrix, CPU/memory and hourly-cost charts, employee lockout, pending overtime controls, and audit view are implemented. Admin styling is bundled; CDN availability is no longer a dependency. The employee portal intentionally retains a separate dark theme. The admin's Hibernate fleet action is the previous Kill Switch operation under a clearer label.
 
 Modal dialogs declare dialog semantics, but focus trapping, Escape-to-close, and focus restoration are not implemented. The recent responsive/browser checks do not establish a full accessibility audit.
 

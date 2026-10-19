@@ -28,7 +28,7 @@ Incoming HTTP
     |
     v
 5. FinOps Analytics Engine
-   Active-vs-24x7 baseline -> savings credits -> WebSocket updates
+   Active-vs-24x7 baseline -> estimated compute avoidance -> WebSocket updates
 ```
 
 Step 1 is intended to hold and replay eligible HTTP requests while a stopped or hibernated instance starts, avoiding a client-facing warm-up failure. Step 2 aims to restore full RAM state and terminal history from a compatible checkpoint on attached storage; successful restoration of open network connections is not assumed and requires protocol-specific validation. Step 3 is the policy gate and can isolate a workspace when an off-hours anomaly is detected. Step 4 runs on shift end or logout, pauses file descriptors, coordinates application quiescence, storage detach, and compute stop. Step 5 calculates active-vs-24x7 savings in near real time and publishes estimates; provider billing remains the source of truth for actual charges.
@@ -69,14 +69,14 @@ The script prompts for a password. First-admin API signup is rejected once an ad
 
 ## Admin UI
 
-The fleet uses responsive cards with separate instance ID, owner, machine type, shift, CPU meter, and status badge. Search matches name, instance ID, or owner. Cards expose wake, management CRIU purge, and anomaly actions according to state/access. Other tabs provide shift editing, retained snapshots, and analytics. Edit `frontend/src/`, then rebuild; `frontend/dist/` is generated output.
+The Chief Architect and Team Lead fleet view is an executive governance dashboard with savings/active-node/threat cards, a state-colored interactive workspace matrix, CPU/memory and hourly-cost SVG charts, runtime counters, employee access controls, overtime approvals, shift editing, and an audit stream. Chief Architect-only stack deletion requires exact workspace-name confirmation; AWS deletion detaches and retains EBS data before terminating EC2. Employees retain the scoped fleet view. Edit `frontend/src/`, then rebuild; `frontend/dist/` is generated output.
 
 ## Current prototype capabilities
 
 - Role-scoped account and workspace management, invitation signup, and first Chief Architect signup.
 - Shift-gated wake/hibernation, 30-second scheduler evaluation, targeted WebSocket fleet/session events, and off-hours anomaly flags.
 - Simulated CRIU snapshot metadata and demo clock/CPU controls by default; real SSM/CRIU image capture and restore are available only with the AWS lifecycle flag and required instance/EBS configuration.
-- Current-state cost projections from configured rates and retained snapshot metadata, with scoped periodic WebSocket updates; not live AWS billing or awarded savings credits.
+- Current-state cost projections plus observed runtime intervals from configured rates, with scoped periodic WebSocket updates; no live AWS billing or awarded credit ledger.
 - Employee portal and admin command center backed by the same API.
 
 These are a mixture of local emulation and explicitly gated AWS integration code for the five-step roadmap. See [project status](PROJECT_STATUS.md) for the exact implementation boundary and the gated checklist for deploying against the AWS $100 credit tier.
@@ -115,7 +115,7 @@ This is a dated local-operation record, not a seed list or a restriction on futu
 
 ## Snapshot vault and demo controls (2026-09-20)
 
-Navigation tabs and snapshot cards now use bundled styles. Both frontends show searchable snapshot cards with creation time, demo time when used, size, panes, and a unique reference. Existing snapshots have only the filename date; their exact time is marked as not recorded. New snapshots store actual UTC `created_at`, optional offset-aware `simulated_at`, and a timestamp/unique-suffix filename.
+Navigation tabs and snapshot cards now use bundled styles. Both frontends show searchable snapshot cards with creation time, demo time when used, measured size/panes when recorded, and a unique reference. Missing local-emulation metadata is shown as not recorded rather than fabricated. Existing snapshots may have only the filename date; their exact time is marked as not recorded. New snapshots store actual UTC `created_at`, optional offset-aware `simulated_at`, and a timestamp/unique-suffix filename.
 
 The employee portal shows **Demo controls** after login for owned workspaces when the server advertises `demo_available`. Compose enables `DEMO_MODE=1` for both API and worker; native processes default to disabled. Select a workspace, enable the toggle, enter a date/time in the displayed server timezone, and apply. Use an in-shift time before Start / Restore. On a powered-on workspace, CPU and running/idle controls take effect immediately. **Apply & evaluate now** runs the shift cutoff without waiting for the scheduler.
 
@@ -133,7 +133,7 @@ The employee vault uses 16px main text, 14px secondary labels, and 22px workspac
 
 The admin UI now uses larger sans-serif text (18px base, 16px action labels), a neutral background, restrained green accents, and responsive spacing. The header uses plain action names; the previous Kill Switch label is now Hibernate fleet with the same behavior. Shifts have dedicated workspace/hour/action columns and overnight guidance. Analytics presents daily savings prominently and separates remaining values with rules rather than individual boxes. Forms, dialogs, fleet cards, and snapshot details follow the same typography. All styles are bundled locally, with no Tailwind CDN dependency.
 
-The employee portal retains its dark theme and existing fleet list. The admin visual refresh does not change backend behavior. See [project status](PROJECT_STATUS.md) for recorded verification; this documentation update does not rerun application tests.
+The employee portal is a separate responsive dark enterprise station with workspace lifecycle actions, shift/connection telemetry, session inspection, inbox/helpdesk requests, and grouped checkpoint history. It uses server-provided fleet and telemetry data and shows unavailable values explicitly. These employee-facing additions do not change backend lifecycle policy. See [employee portal documentation](../The-Downscale-Client/README.md), [integration report](INTEGRATION_REPORT.md), and [project status](PROJECT_STATUS.md) for scope and recorded verification.
 
 ## Missing demo controls or stale UI
 

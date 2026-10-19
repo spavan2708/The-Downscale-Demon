@@ -61,7 +61,7 @@ Verify signup, expired/reused/wrong-user codes, login failure, multiple-workspac
 
 The portal uses React state/refs in `src/App.jsx`, native fetch/WebSocket, and build-time Tailwind. Tokens stay in memory; the implementation does not use React Query, React Router, or localStorage session persistence.
 
-The responsive-card redesign applies to `The-Downscale-Demon/frontend/`, not the sibling portal. On 2026-09-20 the shared local Docker database was cleaned of six demo instances and related snapshots/events, preserving employee `001`, both `hail` workspaces, and the administrator. Consume API results normally; do not hardcode these IDs as a permanent allowlist. See [README](README.md) for the backup record.
+The admin command center and sibling employee portal are separate clients with distinct visual systems. The portal now has its own responsive dark enterprise station. On 2026-09-20 the shared local Docker database was cleaned of six demo instances and related snapshots/events, preserving employee `001`, both `hail` workspaces, and the administrator. Consume API results normally; do not hardcode these IDs as a permanent allowlist. See [README](README.md) for the backup record.
 
 The acceptance checks above are a checklist, not a claim that they were rerun during the documentation update. The active-session timezone is supplied by the server.
 
@@ -77,4 +77,10 @@ The demo clock is workspace-scoped and fixed until changed/disabled. Do not chan
 
 The vault renders one card per instance. Its dropdown contains every retained snapshot for that instance, ordered newest first by actual creation time, with a filename-derived date fallback for legacy records. The newest snapshot is selected initially; selecting an older record updates its details. Equal or unknown timestamps use a stable snapshot-ID tie-breaker, not an invented capture order. Search matches names, instance IDs, and filenames while preserving each matching workspace's full dropdown history. Grouping does not delete records. Restore wakes the workspace rather than loading the selected historical memory image.
 
-The portal uses a dark snapshot variant with 16px primary text, 14px secondary labels, and 22px workspace headings. The admin's larger neutral/green layout is separate. Demo controls appear above the workspace session view for owned instances when the backend advertises capability; otherwise show the unavailable message rather than silently hiding the feature. Port 5173 is strict. See the [employee README](../The-Downscale-Client/README.md) for setup and stale-page troubleshooting.
+The portal now has a dark, responsive enterprise station with Overview, Workspaces, Inbox & requests, and Session history navigation. It exposes the server's shift state/countdown, lifecycle controls, telemetry availability, and current connection latency; it is not a remote shell or desktop. Demo controls appear for owned instances only when the backend advertises capability; otherwise show the unavailable message rather than silently hiding the feature. Port 5173 is strict. See the [employee README](../The-Downscale-Client/README.md) and [integration report](INTEGRATION_REPORT.md) for API contracts, setup, and limitations.
+
+## Employee inbox and session-state APIs
+
+The employee station uses `GET /api/employee/inbox` for team/global announcements, eligible shift notices, and completed request responses. Employees submit overtime, storage, and issue requests through `POST /api/support/requests`; Team Lead/Chief Architect decisions use `POST /api/support/requests/{request_id}/decision`, with team scoping enforced by the API. Team Leads/Chief Architects create announcements through `POST /api/announcements`.
+
+`GET /api/instance/session-state/{instance_id}` returns the workspace's available live inspection and latest checkpoint metadata. SSM inspection is only used when the AWS lifecycle is enabled. In local mode, process/tmux inspection and unmeasured RAM, size, and pane values are explicitly unavailable/not recorded. The portal's API/WebSocket implementation is documented in the [employee architecture](../The-Downscale-Client/ARCHITECTURE.md).

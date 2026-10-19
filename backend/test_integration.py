@@ -10,14 +10,16 @@ os.environ['SHIFT_TIMEZONE'] = 'UTC'
 from fastapi.testclient import TestClient
 from app import app
 from auth import password_hash
-from database import SessionLocal, UserDB, InstanceDB, SnapshotDB
+from database import SessionLocal, UserDB, InstanceDB, SnapshotDB, RuntimeIntervalDB, EventDB
 from engine import (
     LifecycleError,
     _attach_volume,
     complete_buffered_request,
     in_shift,
     queue_request_and_wake,
+    runtime_summary,
     safe_downscale,
+    terminate_workspace,
 )
 
 class IntegrationTests(unittest.TestCase):
@@ -60,6 +62,10 @@ class IntegrationTests(unittest.TestCase):
         with self.client.websocket_connect('/ws/fleet') as fleet:
             fleet.send_json({'token':self.tokens['a']})
             self.assertEqual(fleet.receive_json()['reason'],'connected')
+            fleet.send_json({'type':'PING','sent_at':123})
+            pong = fleet.receive_json()
+            self.assertEqual(pong['type'], 'PONG')
+            self.assertEqual(pong['sent_at'], 123)
             self.client.post('/api/instance/state',headers=self.headers('b'),json={'instance_id':'b','target_state':'hibernated'})
             with self.client.websocket_connect('/ws/criu-dump/a') as dump:
                 dump.send_json({'token':self.tokens['lead']})
@@ -70,9 +76,11 @@ class IntegrationTests(unittest.TestCase):
             self.assertIn('analytics', message)
         data=self.client.get('/api/instances',headers=self.headers('a')).json()
         self.assertEqual(data['analytics']['compute_hourly'],0)
-        self.assertGreater(data['analytics']['snapshot_monthly'],0)
+        self.assertEqual(data['analytics']['snapshot_monthly'],0)
         self.assertEqual(len(data['snapshots']),1)
-        self.assertAlmostEqual(data['analytics']['snapshot_monthly'],34.2/1024*.05,places=6)
+        self.assertIsNone(data['snapshots'][0]['size_mb'])
+        self.assertIsNone(data['snapshots'][0]['memory_footprint_mb'])
+        self.assertIsNone(data['snapshots'][0]['tmux_panes'])
         other=self.client.get('/api/instances',headers=self.headers('b')).json()
         self.assertTrue(all(s['instance_id'] == 'b' for s in other['snapshots']))
     def test_05_ws_denial(self):
@@ -172,6 +180,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(snapshot.snapshot_ref, '/mnt/checkpoints/capture-1')
             self.assertEqual(json.loads(snapshot.process_tree), '100 1 bash')
             self.assertEqual(instance.state, 'hibernated')
+            self.assertTrue(db.query(RuntimeIntervalDB).filter_by(instance_id='a', state='running').count())
 
     def test_10_ebs_attachment_must_belong_to_workspace(self):
         instance = SimpleNamespace(
@@ -196,5 +205,298 @@ class IntegrationTests(unittest.TestCase):
         with patch.dict(os.environ, {'AWS_LIFECYCLE_ENABLED': '0'}):
             response = self.client.get('/proxy/a/health', headers=self.headers('a'))
         self.assertEqual(response.status_code, 503)
+
+    def test_12_employee_inbox_and_team_requests(self):
+        announcement = self.client.post(
+            '/api/announcements',
+            headers=self.headers('admin'),
+            json={'category': 'maintenance', 'title': 'Routine maintenance', 'body': 'Workspace maintenance is scheduled for the platform team.'},
+        )
+        self.assertEqual(announcement.status_code, 201)
+        request = self.client.post(
+            '/api/support/requests',
+            headers=self.headers('a'),
+            json={
+                'request_type': 'overtime',
+                'subject': 'Overtime for release',
+                'details': 'Please approve two hours for the release validation window.',
+                'instance_id': 'a',
+            },
+        )
+        self.assertEqual(request.status_code, 201)
+        self.assertEqual(request.json()['status'], 'open')
+        self.assertEqual(request.json()['extension_hours'], 2)
+        with SessionLocal() as db:
+            db.get(InstanceDB, 'a').shift_start = '09:00'
+            db.get(InstanceDB, 'a').shift_end = '18:00'
+            db.commit()
+        team_inbox = self.client.get('/api/employee/inbox', headers=self.headers('lead')).json()
+        self.assertEqual(team_inbox['requests'][0]['id'], request.json()['id'])
+        decision = self.client.post(
+            f"/api/support/requests/{request.json()['id']}/decision",
+            headers=self.headers('lead'),
+            json={'status': 'approved', 'response': 'Approved for two hours.'},
+        )
+        self.assertEqual(decision.status_code, 200)
+        employee_inbox = self.client.get('/api/employee/inbox', headers=self.headers('a')).json()
+        self.assertTrue(any(item['title'] == 'Routine maintenance' for item in employee_inbox['announcements']))
+        self.assertTrue(any(item['title'] == 'Overtime request approved' for item in employee_inbox['announcements']))
+        other_team = self.client.post(
+            '/api/announcements',
+            headers=self.headers('admin'),
+            json={'category': 'announcement', 'title': 'Private team update', 'body': 'This announcement is scoped to team B.', 'team_id': 'B'},
+        )
+        self.assertEqual(other_team.status_code, 201)
+        employee_inbox = self.client.get('/api/employee/inbox', headers=self.headers('a')).json()
+        self.assertFalse(any(item['title'] == 'Private team update' for item in employee_inbox['announcements']))
+
+    def test_12a_dedicated_overtime_endpoints_update_shift_and_reject_cross_team(self):
+        with SessionLocal() as db:
+            instance = db.get(InstanceDB, 'a')
+            instance.shift_start = '09:00'
+            instance.shift_end = '18:00'
+            db.commit()
+        request = self.client.post(
+            '/api/support/requests',
+            headers=self.headers('a'),
+            json={
+                'request_type': 'overtime',
+                'subject': 'Release validation overtime',
+                'details': 'Request an additional two hours for verification.',
+                'instance_id': 'a',
+                'extension_hours': 2,
+            },
+        )
+        self.assertEqual(request.status_code, 201)
+        approved = self.client.post(
+            f"/api/requests/{request.json()['id']}/approve",
+            headers=self.headers('lead'),
+            json={},
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()['shift_end'], '20:00')
+        self.assertEqual(approved.json()['request']['status'], 'approved')
+        duplicate = self.client.post(
+            f"/api/requests/{request.json()['id']}/approve",
+            headers=self.headers('lead'),
+            json={},
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        other_team_request = self.client.post(
+            '/api/support/requests',
+            headers=self.headers('b'),
+            json={
+                'request_type': 'overtime',
+                'subject': 'Weekend support overtime',
+                'details': 'Request two hours for weekend support.',
+                'instance_id': 'b',
+                'extension_hours': 2,
+            },
+        )
+        self.assertEqual(other_team_request.status_code, 201)
+        denied = self.client.post(
+            f"/api/requests/{other_team_request.json()['id']}/reject",
+            headers=self.headers('lead'),
+            json={},
+        )
+        self.assertEqual(denied.status_code, 404)
+
+    def test_13_governance_runtime_summary_uses_state_intervals(self):
+        instance = SimpleNamespace(
+            id='runtime-test',
+            state='running',
+            state_since='2026-01-01T03:00:00+00:00',
+            instance_type='t3.medium',
+        )
+        with SessionLocal() as db:
+            db.add(RuntimeIntervalDB(
+                instance_id='runtime-test',
+                state='hibernated',
+                started_at='2026-01-01T00:00:00+00:00',
+                ended_at='2026-01-01T03:00:00+00:00',
+            ))
+            summary = runtime_summary(db, [instance], datetime.fromisoformat('2026-01-01T05:00:00+00:00'))
+            self.assertEqual(summary['workspaces'][0]['active_hours'], 2.0)
+            self.assertEqual(summary['workspaces'][0]['hibernated_hours'], 3.0)
+            self.assertEqual(summary['workspaces'][0]['today_active_hours'], 2.0)
+            self.assertEqual(summary['workspaces'][0]['today_hibernated_hours'], 3.0)
+            self.assertAlmostEqual(
+                summary['today_estimated_credits_preserved_usd'], 0.1248,
+            )
+            self.assertEqual(summary['workspaces'][0]['tracked_hours'], 5.0)
+            self.assertAlmostEqual(summary['baseline_compute_usd'], 0.208)
+            self.assertAlmostEqual(summary['managed_compute_usd'], 0.0832)
+            db.rollback()
+        self.assertEqual(self.client.get('/api/governance/overview', headers=self.headers('a')).status_code, 403)
+        overview = self.client.get('/api/governance/overview', headers=self.headers('lead'))
+        self.assertEqual(overview.status_code, 200)
+        self.assertTrue(any(employee['id'] == 'a' for employee in overview.json()['employees']))
+
+    def test_13a_runtime_summary_clips_today_at_configured_timezone_midnight(self):
+        instance = SimpleNamespace(
+            id='timezone-runtime-test',
+            state='running',
+            state_since='2026-01-01T00:00:00+00:00',
+            instance_type='t3.medium',
+        )
+        with SessionLocal() as db:
+            db.add(RuntimeIntervalDB(
+                instance_id=instance.id,
+                state='hibernated',
+                started_at='2025-12-31T17:00:00+00:00',
+                ended_at='2026-01-01T00:00:00+00:00',
+            ))
+            with patch.dict(os.environ, {'SHIFT_TIMEZONE': 'Asia/Kolkata'}):
+                summary = runtime_summary(
+                    db, [instance], datetime.fromisoformat('2026-01-01T05:00:00+00:00'),
+                )
+            self.assertEqual(summary['daily_tracking_timezone'], 'Asia/Kolkata')
+            self.assertEqual(summary['today_hibernated_hours'], 5.5)
+            self.assertEqual(summary['today_active_hours'], 5.0)
+            db.rollback()
+
+    def test_14_employee_lockout_revokes_sessions_and_downscales(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        with self.client.websocket_connect('/ws/fleet') as employee_socket:
+            employee_socket.send_json({'token': self.tokens['a']})
+            self.assertEqual(employee_socket.receive_json()['reason'], 'connected')
+            with self.client.websocket_connect('/ws/fleet') as admin_socket:
+                admin_socket.send_json({'token': self.tokens['admin']})
+                self.assertEqual(admin_socket.receive_json()['reason'], 'connected')
+                response = self.client.post(
+                    '/api/employees/a/access',
+                    headers=self.headers('lead'),
+                    json={'blocked': True},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()['access_blocked'])
+                self.assertEqual(admin_socket.receive_json()['type'], 'ACCESS_BLOCKED')
+                self.assertEqual(admin_socket.receive_json()['type'], 'SESSION_TERMINATED')
+            with self.assertRaises(WebSocketDisconnect) as context:
+                employee_socket.receive_json()
+            self.assertEqual(context.exception.code, 4401)
+        self.assertEqual(self.client.get('/api/instances', headers=self.headers('a')).status_code, 401)
+        self.assertEqual(self.client.post(
+            '/api/auth/login',
+            json={'user_id': 'a', 'password': 'test-password-123'},
+        ).status_code, 403)
+        self.assertEqual(self.client.post(
+            '/api/employees/b/access',
+            headers=self.headers('lead'),
+            json={'blocked': True},
+        ).status_code, 404)
+        restored = self.client.post(
+            '/api/employees/a/access',
+            headers=self.headers('lead'),
+            json={'blocked': False},
+        )
+        self.assertEqual(restored.status_code, 200)
+        self.assertFalse(restored.json()['access_blocked'])
+        self.assertEqual(self.client.post(
+            '/api/auth/login',
+            json={'user_id': 'a', 'password': 'test-password-123'},
+        ).status_code, 200)
+
+    def test_15_workspace_delete_requires_chief_confirmation(self):
+        url = '/api/workspaces/b'
+        wrong = self.client.request('DELETE', url, headers=self.headers('admin'), json={'confirmation_name': 'wrong'})
+        self.assertEqual(wrong.status_code, 409)
+        denied = self.client.request('DELETE', url, headers=self.headers('lead'), json={'confirmation_name': 'Workspace b'})
+        self.assertEqual(denied.status_code, 403)
+        with self.client.websocket_connect('/ws/fleet') as admin_socket:
+            admin_socket.send_json({'token': self.tokens['admin']})
+            self.assertEqual(admin_socket.receive_json()['reason'], 'connected')
+            deleted = self.client.request('DELETE', url, headers=self.headers('admin'), json={'confirmation_name': 'Workspace b'})
+            self.assertEqual(deleted.status_code, 200)
+            self.assertEqual(deleted.json()['status'], 'DELETED')
+            self.assertEqual(admin_socket.receive_json()['type'], 'FLEET_UPDATED')
+        self.assertNotIn('b', {item['id'] for item in self.client.get('/api/instances', headers=self.headers('admin')).json()['fleet']})
+        with SessionLocal() as db:
+            event = db.query(EventDB).filter_by(event_type='FLEET_UPDATED', instance_id=None).order_by(EventDB.id.desc()).first()
+            self.assertIsNotNone(event)
+
+    def test_16_aws_termination_orders_checkpoint_detach_before_terminate(self):
+        ec2 = MagicMock()
+        ec2.describe_instances.return_value = {'Reservations': [{
+            'Instances': [{'State': {'Name': 'running'}}],
+        }]}
+        ec2.describe_volumes.return_value = {'Volumes': [{
+            'State': 'available',
+            'Attachments': [],
+        }]}
+        calls = []
+        ec2.detach_volume.side_effect = lambda **kwargs: calls.append('detach')
+        ec2.stop_instances.side_effect = lambda **kwargs: calls.append('stop')
+        ec2.terminate_instances.side_effect = lambda **kwargs: calls.append('terminate')
+
+        def downscale(instance, snapshot_id):
+            calls.append('checkpoint')
+            ec2.detach_volume(VolumeId=instance.aws_volume_id, InstanceId=instance.aws_instance_id, Force=False)
+            ec2.stop_instances(InstanceIds=[instance.aws_instance_id])
+            ec2.get_waiter('instance_stopped').wait(InstanceIds=[instance.aws_instance_id])
+            return '/mnt/checkpoints/delete', 128.0, 8.0, '12 1 service'
+
+        with SessionLocal() as db:
+            instance = InstanceDB(
+                id='aws-delete-test',
+                aws_instance_id='i-12345678',
+                aws_volume_id='vol-12345678',
+                name='AWS delete test',
+                owner_id='admin',
+                instance_type='t3.medium',
+                state='running',
+            )
+            db.add(instance)
+            db.flush()
+            with patch.dict(os.environ, {'AWS_LIFECYCLE_ENABLED': '1'}), patch(
+                'engine._aws_client', return_value=ec2,
+            ), patch('engine._aws_downscale', side_effect=downscale):
+                terminate_workspace(db, instance)
+            self.assertEqual(instance.state, 'stopped')
+            self.assertEqual(calls, ['checkpoint', 'detach', 'stop', 'terminate'])
+            ec2.terminate_instances.assert_called_once_with(InstanceIds=['i-12345678'])
+            db.rollback()
+
+    def test_17_finops_websocket_pushes_without_new_events(self):
+        clock = MagicMock(side_effect=[0, 0] + [11] * 100)
+        with patch('app.time', SimpleNamespace(monotonic=clock)):
+            with self.client.websocket_connect('/ws/fleet') as socket:
+                socket.send_json({'token': self.tokens['admin']})
+                self.assertEqual(socket.receive_json()['reason'], 'connected')
+                update = socket.receive_json()
+                self.assertEqual(update['type'], 'FINOPS_UPDATED')
+                self.assertIn('today_active_hours', update['runtime'])
+                self.assertIn('today_hibernated_hours', update['runtime'])
+                self.assertIn('today_estimated_credits_preserved_usd', update['runtime'])
+                self.assertEqual(update['runtime']['daily_tracking_timezone'], 'UTC')
+
+    def test_18_aws_termination_sdk_errors_return_explicit_failure(self):
+        from botocore.exceptions import ClientError
+
+        with SessionLocal() as db:
+            instance = db.get(InstanceDB, 'a')
+            instance.aws_instance_id = 'i-12345678'
+            db.commit()
+        ec2 = MagicMock()
+        ec2.describe_instances.side_effect = ClientError(
+            {'Error': {'Code': 'UnauthorizedOperation', 'Message': 'not authorized'}},
+            'DescribeInstances',
+        )
+        with patch.dict(os.environ, {'AWS_LIFECYCLE_ENABLED': '1'}), patch(
+            'engine._aws_client', return_value=ec2,
+        ):
+            response = self.client.request(
+                'DELETE',
+                '/api/workspaces/a',
+                headers=self.headers('admin'),
+                json={'confirmation_name': 'Workspace a'},
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('UnauthorizedOperation', response.json()['detail'])
+        with SessionLocal() as db:
+            db.get(InstanceDB, 'a').aws_instance_id = None
+            db.commit()
 
 if __name__ == '__main__': unittest.main()

@@ -12,7 +12,9 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from database import EventDB, SnapshotDB
+from botocore.exceptions import BotoCoreError, ClientError
+
+from database import EventDB, RuntimeIntervalDB, SnapshotDB
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,16 @@ AWS_POLL_SECONDS = float(os.getenv('AWS_POLL_SECONDS', '5'))
 
 class LifecycleError(RuntimeError):
     pass
+
+
+def _report_aws_failure(action, workspace_id, exc):
+    code = (
+        exc.response.get('Error', {}).get('Code', 'AWSClientError')
+        if isinstance(exc, ClientError)
+        else type(exc).__name__
+    )
+    logger.exception('AWS %s failed for workspace %s (%s)', action, workspace_id, code)
+    return LifecycleError(f'AWS {action} failed for workspace {workspace_id} ({code})')
 
 
 def aws_lifecycle_enabled():
@@ -99,8 +111,111 @@ def in_shift(instance, now=None):
     return start <= clock < end if start < end else clock >= start or clock < end
 
 
-def emit(db, instance_id, event_type='FLEET_UPDATED'):
-    db.add(EventDB(instance_id=instance_id, event_type=event_type))
+def emit(db, instance_id, event_type='FLEET_UPDATED', actor_id=None, details=None):
+    db.add(EventDB(
+        instance_id=instance_id,
+        event_type=event_type,
+        actor_id=actor_id,
+        details=details,
+    ))
+
+
+def transition_instance_state(db, instance, state):
+    if instance.state == state:
+        return
+    now = datetime.now(timezone.utc)
+    started = datetime.fromisoformat(instance.state_since) if instance.state_since else now
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if started < now:
+        db.add(RuntimeIntervalDB(
+            instance_id=instance.id,
+            state=instance.state,
+            started_at=started.isoformat(),
+            ended_at=now.isoformat(),
+        ))
+    instance.state = state
+    instance.state_since = now.isoformat()
+
+
+def runtime_summary(db, instances, now=None):
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    today = now.astimezone(ZoneInfo(os.getenv('SHIFT_TIMEZONE', 'UTC'))).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    ).astimezone(timezone.utc)
+    db.flush()
+    runtime = []
+    totals = {'active_hours': 0.0, 'hibernated_hours': 0.0, 'tracked_hours': 0.0}
+    rates = {'active_hours': 0.0, 'hibernated_hours': 0.0, 'tracked_hours': 0.0}
+    today_totals = {'active_hours': 0.0, 'hibernated_hours': 0.0}
+    today_rates = {'active_hours': 0.0, 'hibernated_hours': 0.0}
+    for instance in instances:
+        durations = {'active_hours': 0.0, 'hibernated_hours': 0.0, 'tracked_hours': 0.0}
+        today_durations = {'active_hours': 0.0, 'hibernated_hours': 0.0}
+        intervals = db.query(RuntimeIntervalDB).filter(
+            RuntimeIntervalDB.instance_id == instance.id,
+        ).all()
+        periods = [
+            (item.state, datetime.fromisoformat(item.started_at), datetime.fromisoformat(item.ended_at))
+            for item in intervals
+        ]
+        started = datetime.fromisoformat(instance.state_since) if instance.state_since else now
+        periods.append((instance.state, started, now))
+        for state, start, end in periods:
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            hours = max(0.0, (end - start).total_seconds() / 3600)
+            durations['tracked_hours'] += hours
+            daily_start = max(start.astimezone(timezone.utc), today)
+            daily_end = min(end.astimezone(timezone.utc), now.astimezone(timezone.utc))
+            daily_hours = max(0.0, (daily_end - daily_start).total_seconds() / 3600)
+            if state in ('running', 'idle', 'isolated'):
+                durations['active_hours'] += hours
+                today_durations['active_hours'] += daily_hours
+            elif state in ('hibernated', 'stopped'):
+                durations['hibernated_hours'] += hours
+                today_durations['hibernated_hours'] += daily_hours
+        rate = RATES.get(instance.instance_type, 0.0)
+        for key, value in durations.items():
+            totals[key] += value
+            rates[key] += value * rate
+        for key, value in today_durations.items():
+            today_totals[key] += value
+            today_rates[key] += value * rate
+        runtime.append({
+            'instance_id': instance.id,
+            'active_hours': round(durations['active_hours'], 4),
+            'hibernated_hours': round(durations['hibernated_hours'], 4),
+            'today_active_hours': round(today_durations['active_hours'], 4),
+            'today_hibernated_hours': round(today_durations['hibernated_hours'], 4),
+            'today_estimated_credits_preserved_usd': round(today_durations['hibernated_hours'] * rate, 6),
+            'tracked_hours': round(durations['tracked_hours'], 4),
+            'managed_compute_usd': round(durations['active_hours'] * rate, 6),
+            'baseline_compute_usd': round(durations['tracked_hours'] * rate, 6),
+            'aws_state': None,
+        })
+    return {
+        'workspaces': runtime,
+        'active_hours': round(totals['active_hours'], 4),
+        'hibernated_hours': round(totals['hibernated_hours'], 4),
+        'today_active_hours': round(today_totals['active_hours'], 4),
+        'today_hibernated_hours': round(today_totals['hibernated_hours'], 4),
+        'today_estimated_credits_preserved_usd': round(
+            today_rates['hibernated_hours'], 6,
+        ),
+        'tracked_hours': round(totals['tracked_hours'], 4),
+        'baseline_compute_usd': round(rates['tracked_hours'], 6),
+        'managed_compute_usd': round(rates['active_hours'], 6),
+        'estimated_credits_preserved_usd': round(
+            max(0.0, rates['tracked_hours'] - rates['active_hours']), 6,
+        ),
+        'tracking_basis': 'database state intervals since runtime tracking was enabled',
+        'daily_tracking_timezone': os.getenv('SHIFT_TIMEZONE', 'UTC'),
+    }
 
 
 def _wait_for_instance_healthy(ec2, instance_id):
@@ -259,12 +374,12 @@ def restore_checkpoint(db, instance):
 
 def wake_instance(db, instance):
     if instance.state in ('running', 'idle'):
-        instance.state = 'running'
+        transition_instance_state(db, instance, 'running')
         instance.has_anomaly = False
         emit(db, instance.id)
         return
     if not aws_lifecycle_enabled():
-        instance.state = 'running'
+        transition_instance_state(db, instance, 'running')
         instance.cpu_load = 4.2
         instance.has_anomaly = False
         emit(db, instance.id)
@@ -275,7 +390,7 @@ def wake_instance(db, instance):
     _wait_for_instance_healthy(ec2, instance_id)
     _attach_volume(ec2, instance)
     restore_checkpoint(db, instance)
-    instance.state = 'running'
+    transition_instance_state(db, instance, 'running')
     instance.cpu_load = 0
     instance.has_anomaly = False
     emit(db, instance.id)
@@ -475,15 +590,18 @@ def safe_downscale(db, instance):
     snapshot_id = str(uuid.uuid4())
     filename = f'SNAPSHOT_{name}_{effective:%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}.IMG'
     if aws_lifecycle_enabled():
-        snapshot_ref, memory_footprint_mb, size_mb, process_tree = _aws_downscale(
-            instance,
-            snapshot_id,
-        )
+        try:
+            snapshot_ref, memory_footprint_mb, size_mb, process_tree = _aws_downscale(
+                instance,
+                snapshot_id,
+            )
+        except (BotoCoreError, ClientError) as exc:
+            raise _report_aws_failure('checkpoint/downscale', instance.id, exc) from exc
     else:
         snapshot_ref = None
-        memory_footprint_mb = 34.2
+        memory_footprint_mb = None
         process_tree = None
-        size_mb = 34.2
+        size_mb = None
     db.add(
         SnapshotDB(
             id=snapshot_id,
@@ -496,12 +614,13 @@ def safe_downscale(db, instance):
                 if demo_available() and instance.demo_enabled and instance.demo_time
                 else None
             ),
+            tmux_panes=None,
             memory_footprint_mb=memory_footprint_mb,
             snapshot_ref=snapshot_ref,
             process_tree=json.dumps(process_tree) if process_tree is not None else None,
         )
     )
-    instance.state = 'hibernated'
+    transition_instance_state(db, instance, 'hibernated')
     instance.cpu_load = 0
     instance.has_anomaly = False
     emit(db, instance.id, 'SESSION_TERMINATED')
@@ -513,6 +632,93 @@ def hibernate(db, instance):
     return safe_downscale(db, instance)
 
 
+def _terminate_workspace(db, instance):
+    if not aws_lifecycle_enabled():
+        transition_instance_state(db, instance, 'stopped')
+        return
+
+    instance_id = _aws_instance_id(instance)
+    ec2 = _aws_client('ec2')
+    response = ec2.describe_instances(InstanceIds=[instance_id])
+    reservations = response.get('Reservations', [])
+    records = [item for reservation in reservations for item in reservation.get('Instances', [])]
+    if not records:
+        raise LifecycleError(f'AWS instance {instance_id} was not found')
+    aws_state = records[0].get('State', {}).get('Name')
+
+    if aws_state == 'pending':
+        ec2.get_waiter('instance_running').wait(
+            InstanceIds=[instance_id],
+            WaiterConfig={'Delay': max(1, int(AWS_POLL_SECONDS)), 'MaxAttempts': max(1, AWS_OPERATION_TIMEOUT // max(1, int(AWS_POLL_SECONDS)))},
+        )
+        aws_state = 'running'
+    if aws_state == 'stopping':
+        ec2.get_waiter('instance_stopped').wait(
+            InstanceIds=[instance_id],
+            WaiterConfig={'Delay': max(1, int(AWS_POLL_SECONDS)), 'MaxAttempts': max(1, AWS_OPERATION_TIMEOUT // max(1, int(AWS_POLL_SECONDS)))},
+        )
+        aws_state = 'stopped'
+    if aws_state == 'shutting-down':
+        ec2.get_waiter('instance_terminated').wait(
+            InstanceIds=[instance_id],
+            WaiterConfig={'Delay': max(1, int(AWS_POLL_SECONDS)), 'MaxAttempts': max(1, AWS_OPERATION_TIMEOUT // max(1, int(AWS_POLL_SECONDS)))},
+        )
+        aws_state = 'terminated'
+
+    if aws_state == 'running':
+        if instance.aws_volume_id:
+            if instance.state in ('running', 'idle', 'isolated'):
+                safe_downscale(db, instance)
+            else:
+                _aws_downscale(instance, str(uuid.uuid4()))
+                transition_instance_state(db, instance, 'hibernated')
+        else:
+            _run_ssm_command(instance_id, ['set -eu', 'sync'])
+            ec2.stop_instances(InstanceIds=[instance_id])
+            ec2.get_waiter('instance_stopped').wait(
+                InstanceIds=[instance_id],
+                WaiterConfig={'Delay': max(1, int(AWS_POLL_SECONDS)), 'MaxAttempts': max(1, AWS_OPERATION_TIMEOUT // max(1, int(AWS_POLL_SECONDS)))},
+            )
+            transition_instance_state(db, instance, 'hibernated')
+        aws_state = 'stopped'
+    elif aws_state not in ('stopped', 'terminated'):
+        raise LifecycleError(f'AWS instance {instance_id} is in unsupported state {aws_state}')
+
+    if instance.aws_volume_id:
+        volume_response = ec2.describe_volumes(VolumeIds=[instance.aws_volume_id])
+        volumes = volume_response.get('Volumes', [])
+        if not volumes:
+            raise LifecycleError(f'EBS volume {instance.aws_volume_id} was not found')
+        attachments = volumes[0].get('Attachments', [])
+        if any(item.get('InstanceId') != instance_id for item in attachments):
+            raise LifecycleError(f'EBS volume {instance.aws_volume_id} is attached to another EC2 instance')
+        if attachments:
+            if any(item.get('State') == 'detaching' for item in attachments):
+                _wait_for_volume_state(ec2, instance.aws_volume_id, 'available')
+            else:
+                if aws_state not in ('stopped', 'terminated'):
+                    raise LifecycleError('Cannot safely detach EBS storage before EC2 stops')
+                ec2.detach_volume(VolumeId=instance.aws_volume_id, InstanceId=instance_id, Force=False)
+                _wait_for_volume_state(ec2, instance.aws_volume_id, 'available')
+
+    if aws_state != 'terminated':
+        ec2.terminate_instances(InstanceIds=[instance_id])
+        ec2.get_waiter('instance_terminated').wait(
+            InstanceIds=[instance_id],
+            WaiterConfig={'Delay': max(1, int(AWS_POLL_SECONDS)), 'MaxAttempts': max(1, AWS_OPERATION_TIMEOUT // max(1, int(AWS_POLL_SECONDS)))},
+        )
+    transition_instance_state(db, instance, 'stopped')
+
+
+def terminate_workspace(db, instance):
+    try:
+        return _terminate_workspace(db, instance)
+    except LifecycleError:
+        raise
+    except (BotoCoreError, ClientError) as exc:
+        raise _report_aws_failure('workspace termination', instance.id, exc) from exc
+
+
 def cloud_metrics(instance):
     if not aws_lifecycle_enabled():
         return {'cpu': instance.cpu_load, 'memory': None}
@@ -521,8 +727,11 @@ def cloud_metrics(instance):
     end = datetime.now(timezone.utc)
     start = end.timestamp() - 300
     metrics = {}
-    for metric_name, key in (('CPUUtilization', 'cpu'), ('mem_used_percent', 'memory')):
-        namespace = 'AWS/EC2' if key == 'cpu' else 'CWAgent'
+    for metric_name, key, namespace in (
+        ('CPUUtilization', 'cpu', 'AWS/EC2'),
+        ('mem_used_percent', 'memory_percent', 'CWAgent'),
+        ('mem_used', 'memory_mb', 'CWAgent'),
+    ):
         response = cloudwatch.get_metric_statistics(
             Namespace=namespace,
             MetricName=metric_name,
@@ -537,7 +746,45 @@ def cloud_metrics(instance):
     return metrics
 
 
-def isolate_instance(instance, memory_percent=None):
+def live_session_state(instance):
+    if not aws_lifecycle_enabled():
+        return {
+            'available': False,
+            'reason': 'Live process and tmux inspection requires the AWS lifecycle connection.',
+        }
+    if instance.state not in ('running', 'idle'):
+        raise LifecycleError('Workspace must be running to inspect its live session')
+    script = (
+        'import json, subprocess\n'
+        'processes = subprocess.run(["ps", "-eo", "pid,ppid,comm", "--forest"], '
+        'capture_output=True, text=True, check=True).stdout\n'
+        'try:\n'
+        ' tmux_output = subprocess.run(["tmux", "list-sessions", "-F", '
+        '"#{session_name}:#{session_windows}"], capture_output=True, text=True, check=True).stdout\n'
+        ' sessions = [line for line in tmux_output.splitlines() if line.strip()]\n'
+        'except (FileNotFoundError, subprocess.CalledProcessError):\n'
+        ' sessions = []\n'
+        'print("SESSION_STATE:" + json.dumps({"processes": processes[-12000:], '
+        '"tmux_sessions": sessions}))\n'
+    )
+    output = _run_ssm_command(
+        _aws_instance_id(instance),
+        ['set -eu', f'python3 -c {shlex.quote(script)}'],
+    )
+    payload = next(
+        (line[len('SESSION_STATE:'):] for line in output.splitlines() if line.startswith('SESSION_STATE:')),
+        None,
+    )
+    if payload is None:
+        raise LifecycleError('Remote session inspection returned no process state')
+    try:
+        result = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise LifecycleError('Remote session inspection returned invalid state') from exc
+    return {'available': True, **result}
+
+
+def isolate_instance(db, instance, memory_percent=None):
     if aws_lifecycle_enabled():
         group_id = os.getenv('AWS_QUARANTINE_SECURITY_GROUP_ID')
         if not group_id:
@@ -547,7 +794,7 @@ def isolate_instance(instance, memory_percent=None):
             Groups=[group_id],
         )
     instance.has_anomaly = True
-    instance.state = 'isolated'
+    transition_instance_state(db, instance, 'isolated')
     memory = 'unknown' if memory_percent is None else f'{memory_percent:.1f}%'
     return (
         f'Off-hours anomaly isolated: workspace={instance.id}, '
@@ -591,6 +838,10 @@ def serialize(instance):
         exempt=instance.is_exempt,
         snoozed=instance.is_snoozed,
         anomaly=instance.has_anomaly,
+        memory_mb=instance.memory_usage_mb,
+        memory_percent=instance.memory_percent,
+        telemetry_updated_at=instance.telemetry_updated_at,
+        shift_active=in_shift(instance),
         shift=f'{instance.shift_start} - {instance.shift_end}',
         shift_start=instance.shift_start,
         shift_end=instance.shift_end,
@@ -603,7 +854,7 @@ def serialize(instance):
 def analytics(fleet, snapshots):
     compute = sum(i['cost'] for i in fleet)
     baseline = sum(RATES.get(i['type'], 0) for i in fleet)
-    storage_gb = sum(s.size_mb for s in snapshots) / 1024
+    storage_gb = sum(s.size_mb or 0 for s in snapshots) / 1024
     storage_month = storage_gb * SNAPSHOT_RATE
     eligible = [i for i in fleet if not i['exempt']]
     return dict(
