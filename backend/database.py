@@ -1,11 +1,15 @@
 import os
 from pathlib import Path
-from sqlalchemy import create_engine, Column, String, Boolean, Float, Integer, inspect, text
+from sqlalchemy import create_engine, Column, String, Boolean, Float, Integer, Text, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DB_DIR = os.getenv('DB_DIR', str(Path(__file__).parent / 'db'))
 os.makedirs(DB_DIR, exist_ok=True)
-engine = create_engine(os.getenv('DATABASE_URL', f'sqlite:///{Path(DB_DIR) / "downscale.db"}'), connect_args={'check_same_thread': False})
+database_url = os.getenv('DATABASE_URL', f'sqlite:///{Path(DB_DIR) / "downscale.db"}')
+if database_url.startswith('postgresql://'):
+    database_url = database_url.replace('postgresql://', 'postgresql+psycopg://', 1)
+connect_args = {'check_same_thread': False} if database_url.startswith('sqlite:') else {}
+engine = create_engine(database_url, connect_args=connect_args)
 Base = declarative_base()
 
 class UserDB(Base):
@@ -24,6 +28,7 @@ class InstanceDB(Base):
     instance_type = Column(String)
     owner_id = Column(String)
     state = Column(String, default='hibernated')
+    aws_volume_id = Column(String, nullable=True)
     is_exempt = Column(Boolean, default=False)
     is_snoozed = Column(Boolean, default=False)
     has_anomaly = Column(Boolean, default=False)
@@ -42,6 +47,9 @@ class SnapshotDB(Base):
     tmux_panes = Column(Integer, default=2)
     created_at = Column(String, nullable=True)
     simulated_at = Column(String, nullable=True)
+    memory_footprint_mb = Column(Float, nullable=True)
+    snapshot_ref = Column(String, nullable=True)
+    process_tree = Column(Text, nullable=True)
 
 class SessionDB(Base):
     __tablename__ = 'sessions'
@@ -68,17 +76,34 @@ class InvitationDB(Base):
 Base.metadata.create_all(engine)
 # Serialize additive SQLite migrations across the API and scheduler processes.
 with engine.begin() as connection:
-    connection.execute(text('BEGIN IMMEDIATE'))
     additions = {
         'users': {'team_id': 'VARCHAR', 'password_hash': 'VARCHAR'},
-        'instances': {'demo_enabled': 'BOOLEAN DEFAULT 0', 'demo_time': 'VARCHAR'},
-        'snapshots': {'created_at': 'VARCHAR', 'simulated_at': 'VARCHAR'},
+        'instances': {
+            'demo_enabled': 'BOOLEAN DEFAULT FALSE',
+            'demo_time': 'VARCHAR',
+            'aws_volume_id': 'VARCHAR',
+        },
+        'snapshots': {
+            'created_at': 'VARCHAR',
+            'simulated_at': 'VARCHAR',
+            'memory_footprint_mb': 'FLOAT',
+            'snapshot_ref': 'VARCHAR',
+            'process_tree': 'TEXT',
+        },
     }
-    for table, fields in additions.items():
-        columns = {c['name'] for c in inspect(connection).get_columns(table)}
-        for column, sql_type in fields.items():
-            if column not in columns:
-                connection.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {sql_type}'))
+    if connection.dialect.name == 'sqlite':
+        connection.execute(text('BEGIN IMMEDIATE'))
+        for table, fields in additions.items():
+            columns = {c['name'] for c in inspect(connection).get_columns(table)}
+            for column, sql_type in fields.items():
+                if column not in columns:
+                    connection.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {sql_type}'))
+    elif connection.dialect.name == 'postgresql':
+        for table, fields in additions.items():
+            for column, sql_type in fields.items():
+                connection.execute(text(
+                    f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}'
+                ))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():

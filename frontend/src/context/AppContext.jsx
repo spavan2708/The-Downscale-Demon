@@ -11,6 +11,6 @@ export function AuthProvider({children}) {
     }
     return body;
   };
-  return <AuthContext.Provider value={{currentUser: session?.user, token: session?.access_token, setSession, api, hasAccess: role => ({employee: 1, manager: 2, admin: 3}[session?.user.role] >= {employee: 1, manager: 2, admin: 3}[role])}}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{currentUser: session?.user, token: session?.access_token, setSession, api, hasAccess: role => ({employee: 1, manager: 2, team_lead: 2, admin: 3, chief_architect: 3}[session?.user.role] >= {employee: 1, manager: 2, team_lead: 2, admin: 3, chief_architect: 3}[role])}}>{children}</AuthContext.Provider>;
 }
 export const useAuth = () => useContext(AuthContext);

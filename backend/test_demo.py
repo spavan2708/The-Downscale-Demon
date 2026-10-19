@@ -70,7 +70,7 @@ class DemoTests(unittest.TestCase):
         self.assertTrue(result['instance']['anomaly'])
         evaluate_shifts()
         with SessionLocal() as db:
-            self.assertEqual(db.get(InstanceDB,'owner').state,'hibernated')
+            self.assertEqual(db.get(InstanceDB,'owner').state,'isolated')
 
     def test_disable_restores_real_clock_and_wake_checks_demo_clock(self):
         self.configure()

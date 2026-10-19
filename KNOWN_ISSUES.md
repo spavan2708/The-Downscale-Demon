@@ -2,6 +2,17 @@
 
 Reviewed against local source on 2026-09-20.
 
+## Five-step lifecycle mitigations and remaining validation
+
+The backend now contains disabled-by-default mitigations for the lifecycle failures below. These are **implemented code paths, not verified production fixes**: no live ALB/API Gateway/SQS/EC2/EBS/CRIU environment was used in tests. The issues remain open for deployment acceptance until failure cases are reproduced and the mitigations are tested on AWS.
+
+| Failure mode | Implemented mitigation | Acceptance evidence still required |
+| --- | --- | --- |
+| Requests reach a sleeping instance and clients see a 502 during warm-up | Opt-in `/proxy` path queues a bounded request envelope in SQS, waits for EC2 status health and CRIU hydration, forwards the held request, and acknowledges its queue message after an upstream response | Cold-start/load tests, request timeout limits, duplicate/expired message behavior, queue redrive/retention, response delivery, and warm-up/upstream failure recovery |
+| EBS reports `VolumeInUse` or remains attached during shutdown | Opt-in downscale verifies the mounted device and attachment, syncs storage, dumps with CRIU, confirms unmount and detach, then calls `ec2.stop_instances` | Interrupted I/O/lock tests, live detach confirmation, retries, partial-failure recovery, and proof stop never precedes safe detach |
+
+This roadmap does not make arbitrary HTTP requests replay-safe, guarantee restoration of open TCP sockets, or guarantee that AWS credits cover all charges. Those behaviors need explicit contracts and verification.
+
 ## Confirmed limitations
 
 | Area | Current behavior | Follow-up |
@@ -11,9 +22,11 @@ Reviewed against local source on 2026-09-20.
 | Admin request lifecycle | In-flight fleet requests are not cancelled and may complete after session changes | Guard stale responses |
 | Admin errors | Structured FastAPI errors are JSON-stringified | Render readable field messages, as the employee portal does |
 | Production transport | Compose configures HTTP/WS, with no TLS termination | Configure HTTPS/WSS before public deployment |
-| Snapshot simulation | No real CRIU dump/download or remote workspace connection exists | Keep simulation explicit in UX and scope |
+| Snapshot/restore transport | Local mode remains simulated; the opt-in SSM/CRIU path has only mocked lifecycle tests and no live compatibility validation | Verify SSM permissions, kernel/CRIU support, process/socket behavior, mount mapping, image integrity, and recovery before production |
 | Account sign-out | Clients clear memory; `/api/logout` hibernates a workspace but does not revoke the bearer token | Add revocation if required |
 | Database scale | Backend and worker share SQLite; contention under load has not been characterized here | Load-test and evaluate migration when warranted |
+
+The confirmed limitations above describe the current default/local behavior and unvalidated production boundaries. See [project status](PROJECT_STATUS.md) for the step-by-step AWS implementation gaps and credit-tier readiness checklist.
 
 ## Behavior to understand
 
@@ -33,15 +46,15 @@ The legacy `/api/login` still combines authentication and workspace wake. New cl
 
 Cluttered command-center fleet metadata, damaged separators, the undefined reset-fleet action, and the six legacy demo instances were addressed. Demo snapshots/events were removed with a backup; see [README](README.md). This cleanup does not restrict future legitimate provisioning.
 
-Portal-specific notes: Demo controls require `DEMO_MODE=1` and an owned workspace with `demo_available: true` (see employee portal [KNOWN_ISSUES.md](../employee-workspace-portal/KNOWN_ISSUES.md)). Admin native development still needs Vite proxy configuration or Docker on port 3000.
+Portal-specific notes: Demo controls require `DEMO_MODE=1` and an owned workspace with `demo_available: true` (see employee portal [KNOWN_ISSUES.md](../The-Downscale-Client/KNOWN_ISSUES.md)). Admin native development still needs Vite proxy configuration or Docker on port 3000.
 
 ## Snapshot/demo limitations
 
 - Exact legacy snapshot times cannot be recovered from date-only filenames. Existing records display `time not recorded` rather than a guessed timestamp.
-- Restore wakes a workspace; simulated CRIU does not restore a selected memory image.
+- Restore wakes a workspace and restores the newest compatible checkpoint only when the AWS lifecycle path is enabled; selecting older vault metadata does not select that image. Local mode remains simulated.
 - Demo settings persist per workspace until disabled and are visible to authorized users. The regular scheduler still evaluates every 30 seconds; use immediate evaluation to skip that delay.
 - CPU/activity controls apply to powered-on workspaces. They do not wake a hibernated workspace. Set an in-shift clock, then use Start / Restore and apply metrics.
-- CPU >= 90 outside shift is a demo anomaly flag. Current scheduler hibernation is shift-based; memory/network thresholds and CPU-based idle timeouts are not implemented.
+- Demo CPU > 85 outside shift flags an anomaly; the scheduler polls CloudWatch CPU and memory when AWS is enabled and isolates if either exceeds 85. Without AWS, it uses simulated CPU and has no memory metric. Network thresholds and CPU-based idle timeouts are not implemented.
 - `DEMO_MODE` defaults off outside Compose. Keep its value consistent between API and worker. Disabling it ignores saved demo clocks; turning a workspace toggle off also clears that workspace's saved override.
 
 ## Current UI behavior and remaining gaps

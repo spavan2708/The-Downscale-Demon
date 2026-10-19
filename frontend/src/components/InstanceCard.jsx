@@ -16,7 +16,8 @@ export default function InstanceCard({instance, busy, canManage, onWake, onPurge
     </dl>
     {(instance.anomaly || instance.exempt || instance.demo_enabled) && <div className="workspace-flags">{instance.demo_enabled && <span>Demo active{instance.demo_time ? ` / ${instance.demo_time.slice(0,16).replace('T', ' ')} ${instance.timezone || ''}` : ' / real clock'}</span>}{instance.anomaly && <span className="workspace-alert">Off-hours threat</span>}{instance.exempt && <span>Exempt from automatic hibernation</span>}</div>}
     <footer className="workspace-actions">
-      {instance.state !== 'running' && <button disabled={busy} className="workspace-button primary" onClick={onWake}>Wake workspace</button>}
+      {!['running', 'isolated'].includes(instance.state) && <button disabled={busy} className="workspace-button primary" onClick={onWake}>Wake workspace</button>}
+      {instance.state === 'isolated' && <span role="status" className="workspace-alert">Isolated; manual review required</span>}
       {canManage && active && <button disabled={busy} className="workspace-button" onClick={onPurge}>CRIU purge</button>}
       {active && <button disabled={busy} className="workspace-button" onClick={onAnomaly}>Test anomaly</button>}
     </footer>

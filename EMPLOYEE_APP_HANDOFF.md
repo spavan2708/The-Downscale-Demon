@@ -2,6 +2,8 @@
 
 Reviewed against source on 2026-09-20. The core flows below are implemented in the sibling portal; retain these contracts when extending it.
 
+These contracts cover the current workspace API. The backend has opt-in AWS proxy/lifecycle code, but it is disabled by default and has only mocked lifecycle tests; the portal's workspace controls still use the same API and its Fleet WebSocket now consumes scoped `FINOPS_UPDATED` analytics. Do not describe live AWS operations or billed savings as verified until deployment acceptance checks pass; see [architecture](ARCHITECTURE.md#target-five-step-lifecycle-data-flow) and [project status](PROJECT_STATUS.md).
+
 Connect the employee app to the existing FastAPI backend at `http://localhost:8000` (WebSocket base `ws://localhost:8000`). Use configurable base URLs and HTTPS/WSS when hosted. CORS permits localhost:5173. Do not create a separate user database, mock fleet, or client-side role selector.
 
 ## Sign up
@@ -45,7 +47,7 @@ Refetch `/api/instances` on FLEET_UPDATED. On SESSION_TERMINATED, immediately cl
 ## Fleet / snapshots / billing
 
 Fleet fields include `id,name,type,owner,state,cpu,cost,hourly_rate,exempt,snoozed,anomaly,shift,shift_start,shift_end`. `cost` is current hourly compute; powered-on idle nodes are billable. Stopped/hibernated nodes have zero compute cost.
-Snapshots contain `id,instance_id,filename,size_mb,tmux_panes,created_at,simulated_at,legacy_date`. New filenames contain date, time, and a unique suffix; display the server filename as supplied. Use instance ID for grouped card keys and snapshot UUID for dropdown options. CRIU is simulated; no actual download endpoint exists.
+Snapshots contain `id,instance_id,filename,size_mb,tmux_panes,created_at,simulated_at,legacy_date,memory_footprint_mb,snapshot_ref,process_tree`. New filenames contain date, time, and a unique suffix; display the server filename as supplied. Use instance ID for grouped card keys and snapshot UUID for dropdown options. CRIU is simulated with AWS disabled; the opt-in SSM path stores checkpoint metadata but has no checkpoint-download endpoint. Restore uses the latest compatible checkpoint, not the vault's selected historical metadata.
 
 Use server analytics: `compute_hourly,compute_daily,snapshot_gb,snapshot_monthly,total_daily,daily_savings,downscale_rate,exempt_nodes,currency,billing_basis`. USD current-state projections: compute/day = compute/hour × 24; snapshot/month = retained MiB / 1024 × $0.05; total/day = compute/day + snapshot/month / 30. Do not invent savings or recompute billing from visible cards.
 
@@ -75,4 +77,4 @@ The demo clock is workspace-scoped and fixed until changed/disabled. Do not chan
 
 The vault renders one card per instance. Its dropdown contains every retained snapshot for that instance, ordered newest first by actual creation time, with a filename-derived date fallback for legacy records. The newest snapshot is selected initially; selecting an older record updates its details. Equal or unknown timestamps use a stable snapshot-ID tie-breaker, not an invented capture order. Search matches names, instance IDs, and filenames while preserving each matching workspace's full dropdown history. Grouping does not delete records. Restore wakes the workspace rather than loading the selected historical memory image.
 
-The portal uses a dark snapshot variant with 16px primary text, 14px secondary labels, and 22px workspace headings. The admin's larger neutral/green layout is separate. Demo controls appear above the workspace session view for owned instances when the backend advertises capability; otherwise show the unavailable message rather than silently hiding the feature. Port 5173 is strict. See the [employee README](../employee-workspace-portal/README.md) for setup and stale-page troubleshooting.
+The portal uses a dark snapshot variant with 16px primary text, 14px secondary labels, and 22px workspace headings. The admin's larger neutral/green layout is separate. Demo controls appear above the workspace session view for owned instances when the backend advertises capability; otherwise show the unavailable message rather than silently hiding the feature. Port 5173 is strict. See the [employee README](../The-Downscale-Client/README.md) for setup and stale-page troubleshooting.

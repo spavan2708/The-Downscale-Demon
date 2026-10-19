@@ -11,6 +11,7 @@
 .status-running { color: #166534; background: #dcfce7; }
 .status-hibernated { color: #1e40af; background: #eff6ff; }
 .status-idle { color: #92400e; background: #fef3c7; }
+.status-isolated { color: #991b1b; background: #fee2e2; }
 .workspace-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin: 0; padding: 0 24px 24px; }
 .workspace-details dt { color: #64748b; font-size: 11px; margin-bottom: 7px; }
 .workspace-details dd { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }

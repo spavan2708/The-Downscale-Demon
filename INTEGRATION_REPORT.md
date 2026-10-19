@@ -2,7 +2,35 @@
 
 Reviewed against source on 2026-09-20.
 
+## Five-step pipeline integration target
+
+This report separates local default behavior from the opt-in AWS lifecycle path. With `AWS_LIFECYCLE_ENABLED=0` (the default), REST endpoints manage simulated workspace state. When explicitly enabled and configured, the edge proxy uses SQS and EC2, state hydration/downscale use EBS and SSM-driven CRIU, anomaly polling can read CloudWatch and isolate with a quarantine security group, and the fleet WebSocket emits scoped analytics. No live AWS account validation is claimed.
+
+```text
+1 Edge Proxy & Buffering
+  API Gateway / Lambda -> SQS request envelope
+       |                    (bounded, expiring, correlated)
+       | readiness
+2 State Preservation & Hydration
+  EC2 start -> checkpoint EBS attach -> compatible CRIU restore -> ready
+       |
+3 Shift RBAC & Anomaly Guard
+  Employee -> Team Lead -> Chief Architect checks
+  shift authorization + off-hours CPU/RAM assessment -> allow/isolate
+       |
+4 Safe Downscale & Storage Unmount
+  quiesce -> flush/checkpoint -> unmount/detach confirmation
+  -> AWS SDK ec2.stop_instances
+       |
+5 FinOps Analytics Engine
+  active usage vs 24x7 baseline -> estimated savings -> authorized WebSocket
+```
+
+The cross-component contract carries a workspace ID, request/correlation ID, expiry, and explicit failure results. The implementation bounds SQS request payload size and waits for EC2 status checks, but AWS queue retention, redrive, client timeout limits, duplicate delivery, retry/idempotency, and response correlation still require deployment configuration and validation. CRIU checkpoint compatibility and socket behavior are environment-dependent. FinOps estimates must be distinguished from actual billed usage.
+
 ## Authentication and isolation
+
+The user-facing hierarchy is Employee -> Team Lead -> Chief Architect; persisted role aliases map to server-side ranks. The API never accepts client-provided role claims.
 
 Protected REST endpoints require `Authorization: Bearer <access_token>`. Roles are persisted server-side: `employee` (own instances), `manager` (assigned team), `admin` (entire fleet). Client role claims are never accepted. Snapshots, analytics, mutations and event delivery use the same scope. Unauthorized instance IDs return 404; management-only actions return 403 for employees.
 
@@ -22,7 +50,7 @@ Existing authenticated mutation endpoints: `/api/shift/update` (`instance_id,shi
 
 ## FinOps formulas
 
-USD current-state projections, not historical invoices or live AWS price quotes. Configured compute rates: t3.medium=0.0416/hour; c5.xlarge=0.1700/hour; r5.large=0.1260/hour.
+The current API provides USD current-state projections, not historical invoices, live AWS price quotes, or awarded credits. Defaults are t3.medium=0.0416/hour; c5.xlarge=0.1700/hour; r5.large=0.1260/hour. `EC2_HOURLY_RATES_JSON` can override them with deployment-appropriate rates. The production FinOps step still needs reconciliation with AWS billing/usage data and must not label projected savings as awarded credits.
 
 - compute_hourly = sum(rate[type] for running or idle instances). Idle means powered on. Hibernated/stopped contribute zero.
 - compute_daily = compute_hourly × 24.
@@ -32,7 +60,7 @@ USD current-state projections, not historical invoices or live AWS price quotes.
 - daily_savings = (all-allocated-instance hourly baseline - compute_hourly) × 24 - snapshot_monthly / 30.
 - downscale_rate = hibernated non-exempt instances / all non-exempt instances × 100; empty denominator gives zero.
 
-Snapshots remain billable after wake. CRIU is simulated; each new hibernation records 34.2 MiB, independently retained (no incremental block deduplication). Legacy filenames: `SNAPSHOT_[sanitized Instance_Name]_[YYYYMMDD].IMG`; new captures also include time and a unique suffix; UUID snapshot IDs distinguish repeated dumps. EC2 ancillary charges and live metered usage are outside this estimate.
+Snapshots remain billable after wake. In local mode CRIU is simulated and each new hibernation records 34.2 MiB. In AWS mode the remote checkpoint's measured directory size and RAM footprint are stored separately; actual EBS storage billing still requires AWS billing reconciliation. Snapshots are independently retained (no incremental block deduplication is modeled). Legacy filenames: `SNAPSHOT_[sanitized Instance_Name]_[YYYYMMDD].IMG`; new captures also include time and a unique suffix; UUID snapshot IDs distinguish repeated dumps. EC2 ancillary charges and live metered usage are outside this estimate.
 
 ## WebSockets
 
@@ -48,7 +76,9 @@ Fleet frames are JSON (replaces the old bare FLEET_UPDATED string):
 
 On SESSION_TERMINATED, close the active workspace session only if instance_id matches; refetch fleet. Events are persisted transactionally and delivered only to authorized owners/team leads/admins, including changes from Celery. Live delivery polls every 500 ms. Reconnect and refetch: historical events are not replayed on a new connection.
 
-CRIU socket streams text logs after committing the hibernation/snapshot/events. Closing the terminal does not undo the purge. Logout, stop, shift cutoff and purge all emit targeted SESSION_TERMINATED.
+The fleet socket also sends `{"type":"FINOPS_UPDATED","analytics":{...}}` every ten seconds. Event frames include the currently scoped `analytics` object as well. Both frontends consume these updates; values are current-state estimates based on configured rates and retained snapshot sizes, not billed usage or AWS credits.
+
+The CRIU socket streams status text after committing hibernation/snapshot/events. With AWS disabled it reports simulated operations; with AWS enabled it reports the result of the SSM/CRIU path. Closing the terminal does not undo the purge. Logout, stop, shift cutoff and purge emit targeted SESSION_TERMINATED. This WebSocket does not stream the checkpoint image.
 
 Anomaly response: `{status:"ANOMALY_TRIGGERED",off_hours_threat:boolean,context:"Off-Hours Threat"|"In-shift CPU spike"}`. Only powered-on instances can be tested (409 otherwise). Shift checks use SHIFT_TIMEZONE (UTC default; Compose Asia/Kolkata), start-inclusive/end-exclusive boundaries, overnight support, and equal boundaries as 24 hours. Exempt/snoozed nodes are authorized outside shift. Celery checks every 30 seconds.
 
@@ -74,7 +104,7 @@ See EMPLOYEE_APP_HANDOFF.md for the complete employee-app implementation instruc
 
 `POST /api/auth/signup/chief-architect` accepts `{user_id,name,password}` without an invitation and returns HTTP 201 with the authentication payload. It rejects extra fields and uses a SQLite immediate transaction to serialize first-admin creation. An existing administrator or user ID returns 409. The employee portal exposes this flow; `bootstrap_admin.py` is also available.
 
-The command center is this repository's `frontend/`; the employee portal is a separate sibling project at `../employee-workspace-portal/`. Both keep tokens in memory. CORS permits localhost:5173. The command center now has responsive fleet cards and owner-aware search. Its WebSocket reconnect uses a fixed 1.5-second retry without focus refresh; the portal uses exponential backoff and focus reconciliation.
+The command center is this repository's `frontend/`; the employee portal is a separate sibling project at `../The-Downscale-Client/`. Both keep tokens in memory. CORS permits localhost:5173. The command center now has responsive fleet cards and owner-aware search. Its WebSocket reconnect uses a fixed 1.5-second retry without focus refresh; the portal uses exponential backoff and focus reconciliation.
 
 See [project status](PROJECT_STATUS.md) for recorded backend, portal, migration, and browser validation. Documentation-only updates do not rerun those suites.
 

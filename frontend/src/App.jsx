@@ -8,7 +8,7 @@ import './command.css';
 const button = 'command-button';
 const input = 'command-input';
 const money = value => Number(value || 0).toFixed(2);
-const STATE_KEYS = ['running', 'hibernated', 'stopped', 'idle'];
+const STATE_KEYS = ['running', 'idle', 'isolated', 'hibernated', 'stopped'];
 const workspace = () => ({name: '', instance_type: 't3.medium', shift_start: '09:00', shift_end: '18:00'});
 function Dashboard() {
   const {currentUser, token, setSession, api, hasAccess} = useAuth();
@@ -33,8 +33,9 @@ function Dashboard() {
       socket.onopen = () => socket.send(JSON.stringify({token}));
       socket.onmessage = event => {
         const message = JSON.parse(event.data);
+        if (message.analytics) setAnalytics(message.analytics);
         if (message.type === 'SESSION_TERMINATED') setNotice(`Workspace ${message.instance_id} session terminated.`);
-        refresh();
+        if (message.type !== 'FINOPS_UPDATED') refresh();
       };
       socket.onclose = event => {
         if (event.code === 4401) {setSession(null); return;}
@@ -62,7 +63,7 @@ function Dashboard() {
     </form></main>;
   return <main className="command-shell">
     <header className="command-header">
-      <div className="command-brand"><p className="eyebrow">FinOps command center</p><h1>Downscale Demon<span className="brand-dot">.</span></h1><p className="account-line">{currentUser.name} &middot; {{employee:'Employee', manager:'Team Lead', admin:'Chief Architect'}[currentUser.role]} &middot; {currentUser.team_id}</p></div>
+      <div className="command-brand"><p className="eyebrow">FinOps command center</p><h1>Downscale Demon<span className="brand-dot">.</span></h1><p className="account-line">{currentUser.name} &middot; {{employee:'Employee', manager:'Team Lead', team_lead:'Team Lead', admin:'Chief Architect', chief_architect:'Chief Architect'}[currentUser.role]} &middot; {currentUser.team_id}</p></div>
       <div className="header-actions">
         {hasAccess('manager') && <button className={`${button} command-button-primary`} onClick={() => {setInviteMode(false); setProvision({user_id:'', name:'', password:'', team_id:currentUser.team_id || '', role:'employee', instances:[workspace()]});}}>Add employee</button>}
         {hasAccess('manager') && <button className={button} onClick={() => {setInviteMode(true); setProvision({user_id:'',name:'',password:'',team_id:currentUser.team_id || '',role:'employee',instances:[workspace()]});}}>Invite employee</button>}
@@ -103,7 +104,7 @@ function Dashboard() {
     {editing && <Modal title="Update shift" close={() => setEditing(null)}><form className="space-y-4" onSubmit={e => {e.preventDefault(); perform(async () => {await post('/api/shift/update',editing); setEditing(null); await fetchFleet();});}}>{['shift_start','shift_end'].map(key => <label key={key} className="block">{{user_id:"User ID",name:"Full name",password:"Password",team_id:"Team",shift_start:"Shift start",shift_end:"Shift end"}[key] || key}<input required type="time" className={input} value={editing[key]} onChange={e => setEditing({...editing,[key]:e.target.value})}/></label>)}<p>Equal boundaries mean 24 hours; overnight shifts are supported.</p><p role="alert" className="field-error">{error}</p><button disabled={busy} className={button}>SAVE</button></form></Modal>}
     {provision && <Modal title={inviteMode ? "Invite user and allocate workspaces" : "Provision employee and workspaces"} close={() => setProvision(null)}><form className="space-y-3" onSubmit={e => {e.preventDefault(); perform(async () => {if (inviteMode) {const {name,password,...invitation} = provision; setCreatedInvite(await post('/api/invitations',invitation));} else {await post('/api/employees',provision);} setProvision(null); await fetchFleet();});}}>
       {(inviteMode ? ['user_id','team_id'] : ['user_id','name','password','team_id']).map(key => <label key={key} className="block">{{user_id:"User ID",name:"Full name",password:"Password",team_id:"Team",shift_start:"Shift start",shift_end:"Shift end"}[key] || key}<input required type={key === 'password' ? 'password' : 'text'} minLength={key === 'password' ? 12 : 1} disabled={key === 'team_id' && !hasAccess('admin')} className={input} value={provision[key]} onChange={e => setProvision({...provision,[key]:e.target.value})}/></label>)}
-      {hasAccess('admin') && <label className="block">Role<select className={input} value={provision.role} onChange={e => setProvision({...provision,role:e.target.value})}><option value="employee">Employee</option><option value="manager">Team Lead</option></select></label>}
+      {hasAccess('admin') && <label className="block">Role<select className={input} value={provision.role} onChange={e => setProvision({...provision,role:e.target.value})}><option value="employee">Employee</option><option value="team_lead">Team Lead</option></select></label>}
       {provision.instances.map((spec,index) => <fieldset key={index} className="workspace-fields"><legend>Workspace {index+1}</legend>{Object.keys(spec).map(key => <label key={key} className="block">{{name:'Workspace name',instance_type:'Machine type',shift_start:'Shift start',shift_end:'Shift end'}[key]}{key === 'instance_type' ? <select className={input} value={spec[key]} onChange={e => setProvision({...provision,instances:provision.instances.map((s,j) => j === index ? {...s,[key]:e.target.value} : s)})}>{['t3.medium','c5.xlarge','r5.large'].map(t => <option key={t}>{t}</option>)}</select> : <input required type={key.startsWith('shift') ? 'time' : 'text'} className={input} value={spec[key]} onChange={e => setProvision({...provision,instances:provision.instances.map((s,j) => j === index ? {...s,[key]:e.target.value} : s)})}/>}</label>)}</fieldset>)}
       <p role="alert" className="field-error">{error}</p><button type="button" className={button} disabled={provision.instances.length >= 20} onClick={() => setProvision({...provision,instances:[...provision.instances,workspace()]})}>ADD WORKSPACE</button><button disabled={busy} className={button}>{inviteMode ? "CREATE INVITATION" : "CREATE"}</button>
     </form></Modal>}

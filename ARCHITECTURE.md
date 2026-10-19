@@ -2,7 +2,42 @@
 
 Source review: 2026-09-20.
 
-## Runtime layout
+## Target five-step lifecycle data flow
+
+```text
+Client
+  |
+  | HTTP request
+  v
+[1 Edge Proxy & Buffering]
+API Gateway / Lambda -> SQS (request ID + bounded payload)
+  |                         |
+  | instance ready          | hold until warm-up completes
+  +-------------------------+
+  |
+  v
+[2 State Preservation & Hydration]
+Wake EC2 -> attach checkpoint EBS -> validate/restore CRIU RAM + terminal history
+  |
+  v
+[3 Shift RBAC & Anomaly Guard]
+Employee -> Team Lead -> Chief Architect authorization
+Shift window + CPU/RAM anomaly assessment -> allow or isolate
+  |
+  v
+[4 Safe Downscale & Storage Unmount]
+On shift end/logout: pause file descriptors -> quiesce -> flush locks/I/O
+  -> checkpoint -> unmount/detach EBS
+  -> AWS SDK ec2.stop_instances
+  |
+  v
+[5 FinOps Analytics Engine]
+Real-time active usage vs 24x7 baseline -> savings estimate -> WebSocket stream
+```
+
+The guard is the policy boundary for both wake and downscale actions. Buffered requests are replayed only after the instance is ready and the request remains authorized; the edge must correlate the queued request with its response and enforce payload, timeout, retry, and idempotency limits. The restore step requires a compatible kernel, CPU feature set, CRIU version, and checkpoint layout. Socket restoration is best-effort and application/protocol dependent; it is not a general guarantee. The safe-downscale step must confirm unmount/detach completion before stopping the instance. FinOps values are estimates until reconciled with AWS billing data.
+
+## Current local runtime (implemented prototype)
 
 ```text
 Admin browser -> nginx :3000 -> FastAPI :8000
@@ -15,6 +50,20 @@ Redis broker <-------------- Celery worker + beat
 
 nginx serves `frontend/dist` and proxies `/api/` and `/ws/` to the backend. The sibling portal uses `VITE_API_BASE_URL` and derives its WebSocket URL from that value.
 
+Compose leaves AWS operations disabled. When explicitly enabled, the backend's `/proxy/{instance_id}/{path}` path queues a bounded request envelope in SQS, starts the bound EC2 instance, waits for EC2 system/instance status checks, confirms EBS attachment, restores the latest CRIU checkpoint through SSM, then forwards the held request. Downscale runs remote CRIU via SSM, verifies the mount source, unmounts and confirms EBS detach before stopping EC2. CloudWatch CPU/memory metrics feed the scheduler; a quarantine security group and optional Slack webhook provide isolation/alert delivery. This code does not provision API Gateway/Lambda, SQS queues, EC2/EBS resources, IAM policies, SSM/CloudWatch agents, or health-check targets. The opt-in path has mocked tests only and is not a deployed or AWS-certified data path.
+
+## Target component responsibilities and communication
+
+| Step | Component | Responsibility and handoff |
+| --- | --- | --- |
+| 1 | Edge Proxy & Buffering | Accept HTTP traffic for an unavailable workspace, enqueue bounded request envelopes in SQS, trigger/observe warm-up, and replay with request/response correlation when readiness is confirmed. |
+| 2 | State Preservation & Hydration | Start the assigned EC2 instance, attach checkpoint EBS storage, validate checkpoint/runtime compatibility, restore RAM and terminal history with CRIU, attempt compatible socket restoration, then report readiness to the edge. |
+| 3 | Shift RBAC & Anomaly Guard | Enforce the Employee -> Team Lead -> Chief Architect role hierarchy and shift window for lifecycle operations; inspect off-hours CPU/RAM signals and isolate an anomalous workspace. |
+| 4 | Safe Downscale & Storage Unmount | Stop accepting new work, pause/close file descriptors, quiesce processes, flush locks, create and verify a checkpoint, unmount/detach EBS safely, then call AWS SDK `ec2.stop_instances`. |
+| 5 | FinOps Analytics Engine | Compare active resource usage with the configured 24x7 baseline in near real time, calculate estimated savings/credits, and publish metric updates to authorized clients over WebSockets. |
+
+Lifecycle envelopes carry workspace and request correlation IDs and expiration; SQS message retention, redrive policy, idempotent replay, client timeout, and duplicate-delivery behavior must be configured and verified in AWS. Each lifecycle stage reports failure instead of signaling readiness or shutdown success prematurely. AWS credentials and role assignments must remain server-side.
+
 ## Backend modules
 
 | File | Responsibility |
@@ -22,8 +71,8 @@ nginx serves `frontend/dist` and proxies `/api/` and `/ws/` to the backend. The 
 | `backend/app.py` | REST routes, provisioning, invitations, WebSocket authentication and streaming |
 | `backend/auth.py` | PBKDF2 password hashes, opaque bearer sessions, role and instance authorization |
 | `backend/database.py` | SQLAlchemy models, SQLite setup, additive legacy-user migrations |
-| `backend/engine.py` | Shift rules, hibernation, snapshot metadata, serialization and billing estimates |
-| `backend/scheduler.py` | Celery shift evaluation every 30 seconds |
+| `backend/engine.py` | Shift rules, simulated or gated AWS lifecycle operations, CRIU/EBS metadata, request proxying, serialization and billing estimates |
+| `backend/scheduler.py` | Celery shift evaluation and gated CloudWatch anomaly polling every 30 seconds |
 | `backend/bootstrap_admin.py` | Interactive administrator provisioning |
 
 Tables: users, instances, snapshots, sessions, events, invitations. Session and invitation tokens are stored as SHA-256 hashes. Sessions expire after eight hours; invitations after 24 hours. Invitation redemption uses a conditional unused/unexpired UPDATE in the same transaction as account and workspace creation. First-admin signup uses SQLite `BEGIN IMMEDIATE`.
@@ -38,7 +87,7 @@ Admins see all instances, managers see instances owned by users in their assigne
 
 The backend uses `SHIFT_TIMEZONE` (UTC default; Asia/Kolkata in Compose). Boundaries are start-inclusive/end-exclusive, overnight shifts are supported, and equal boundaries mean 24 hours. Exempt or snoozed instances bypass shift restrictions. Updating a shift hibernates a powered-on instance if it falls outside the new window.
 
-CRIU is a simulation that records snapshot metadata and streams terminal text; it does not save or download real process memory. Compute estimates include running and idle instances. Retained snapshots remain billed after wake. Estimates use configured rates and a 30-day month, not live provider invoices.
+With AWS disabled, CRIU remains a simulation that records metadata and streams terminal text. With AWS enabled, remote CRIU dump/restore runs through SSM against the configured process and attached checkpoint volume; it requires a compatible OS/kernel/CRIU, sufficient SSM permissions, a supported process tree, and verified device/mount configuration. Compute estimates include running, idle, and isolated instances. Rates can be supplied using `EC2_HOURLY_RATES_JSON`; there is no live AWS Price List or Cost Explorer ingestion, and projected savings are not awarded credits.
 
 ## Frontend structure
 
@@ -56,7 +105,7 @@ Additive migrations add nullable `snapshots.created_at` / `simulated_at` and `in
 
 `engine.instance_now()` uses the instance's fixed simulated time only when both `DEMO_MODE=1` and `demo_enabled` are true. The shared `in_shift()` function makes REST wake/shift/anomaly checks and Celery use the same effective clock. Actual snapshot creation uses UTC wall time. `POST /api/instance/demo` authorizes the target through `require_instance`, validates CPU/activity/time, persists overrides, emits a fleet event, and can run shift evaluation immediately. It does not grant exemption or snooze privileges.
 
-`components/SnapshotVault.jsx` and its CSS exist in both frontend projects. The portal additionally uses `components/DemoControls.jsx`. They remain separate build artifacts; keep shared snapshot rendering consistent when changing the API. For employee portal-specific snapshot vault implementation, see `../employee-workspace-portal/ARCHITECTURE.md`.
+`components/SnapshotVault.jsx` and its CSS exist in both frontend projects. The portal additionally uses `components/DemoControls.jsx`. They remain separate build artifacts; keep shared snapshot rendering consistent when changing the API. For employee portal-specific snapshot vault implementation, see [its architecture](../The-Downscale-Client/ARCHITECTURE.md).
 
 ## Current presentation and snapshot grouping
 

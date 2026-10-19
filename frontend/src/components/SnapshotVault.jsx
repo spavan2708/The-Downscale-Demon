@@ -15,8 +15,8 @@ export default function SnapshotVault({snapshots = [], fleet = [], onRestore, bu
   const visible = [...groups.entries()].filter(([id, history]) =>
     `${id} ${fleet.find(i => i.id === id)?.name || ''} ${history.map(s => s.filename).join(' ')}`.toLowerCase().includes(query.toLowerCase()));
   return <section className={`snapshot-vault ${dark ? 'vault-dark' : ''}`} aria-label="Snapshot vault">
-    <div className="vault-heading"><div><h2>Snapshot vault</h2><p>{snapshots.length} snapshots across {groups.size} workspaces. Times shown in {timezone}.</p></div><span className="vault-tag">SIMULATED CRIU</span></div>
-    <p className="vault-note">Restore wakes the workspace; this demo does not load a particular memory image. Retained snapshots continue to count toward storage estimates.</p>
+    <div className="vault-heading"><div><h2>Snapshot vault</h2><p>{snapshots.length} snapshots across {groups.size} workspaces. Times shown in {timezone}.</p></div><span className="vault-tag">CRIU SNAPSHOTS</span></div>
+    <p className="vault-note">Restore starts the workspace from its latest compatible checkpoint when available; selecting an older record only changes its displayed metadata. Retained snapshots continue to count toward storage estimates.</p>
     <input className="vault-search" aria-label="Search snapshots" placeholder="Search workspace, instance or filename" value={query} onChange={e => setQuery(e.target.value)}/>
     <div className="snapshot-grid">{visible.map(([instanceId, history]) => {
       const instance = fleet.find(i => i.id === instanceId);

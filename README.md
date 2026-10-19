@@ -1,8 +1,37 @@
-# The Downscale Demon
+# The Downscale Demon — Unified Cloud Lifecycle Pipeline
 
-FastAPI service and React admin command center for shift-aware workspace management, simulated hibernation/snapshots, and current-state cost estimates.
+The Downscale Demon is a shift-aware cloud lifecycle system designed to reduce idle compute spend without losing an employee's work. Its target production design connects edge request buffering, compute hydration, shift and anomaly controls, safe shutdown, and FinOps analytics in one five-step pipeline.
 
-Documentation reviewed against local source on 2026-09-20.
+**Implementation status:** the default deployment remains a local FastAPI/React prototype with simulated workspaces, snapshot metadata, shift scheduling, WebSockets, and estimated billing. The backend now includes an opt-in AWS lifecycle path (`AWS_LIFECYCLE_ENABLED=1`) for SQS buffering, EC2 health/start/stop, EBS attachment, SSM-driven CRIU checkpoint/restore, CloudWatch anomaly inputs, and edge forwarding. It is disabled by default and has not been validated against a live AWS account. The five steps below describe the target architecture; gated code paths are not a production deployment certification.
+
+## Five-step lifecycle
+
+```text
+Incoming HTTP
+    |
+    v
+1. Edge Proxy & Buffering
+   API Gateway / Lambda -> SQS queue while the workspace warms
+    |
+    v
+2. State Preservation & Hydration
+   Wake EC2 -> attach checkpoint storage -> restore CRIU RAM/terminal state
+    |
+    v
+3. Shift RBAC & Anomaly Guard
+   Employee -> Team Lead -> Chief Architect authorization
+   Shift-window checks + off-hours CPU/RAM anomaly isolation
+    |
+    v
+4. Safe Downscale & Storage Unmount
+   Quiesce I/O -> flush/close resources -> checkpoint -> unmount -> stop EC2
+    |
+    v
+5. FinOps Analytics Engine
+   Active-vs-24x7 baseline -> savings credits -> WebSocket updates
+```
+
+Step 1 is intended to hold and replay eligible HTTP requests while a stopped or hibernated instance starts, avoiding a client-facing warm-up failure. Step 2 aims to restore full RAM state and terminal history from a compatible checkpoint on attached storage; successful restoration of open network connections is not assumed and requires protocol-specific validation. Step 3 is the policy gate and can isolate a workspace when an off-hours anomaly is detected. Step 4 runs on shift end or logout, pauses file descriptors, coordinates application quiescence, storage detach, and compute stop. Step 5 calculates active-vs-24x7 savings in near real time and publishes estimates; provider billing remains the source of truth for actual charges.
 
 ## Projects and entry points
 
@@ -10,7 +39,7 @@ Documentation reviewed against local source on 2026-09-20.
 | --- | --- | --- |
 | API | `backend/` | http://localhost:8000 |
 | Admin command center | `frontend/` in this repository | http://localhost:3000 via Docker |
-| Employee workspace portal | `../employee-workspace-portal/` | http://localhost:5173 via Vite |
+| Employee workspace portal | `../The-Downscale-Client/` | http://localhost:5173 via Vite |
 
 The two frontends are separate applications using the same API and database. Compose builds the admin frontend, not the sibling employee portal.
 
@@ -42,6 +71,22 @@ The script prompts for a password. First-admin API signup is rejected once an ad
 
 The fleet uses responsive cards with separate instance ID, owner, machine type, shift, CPU meter, and status badge. Search matches name, instance ID, or owner. Cards expose wake, management CRIU purge, and anomaly actions according to state/access. Other tabs provide shift editing, retained snapshots, and analytics. Edit `frontend/src/`, then rebuild; `frontend/dist/` is generated output.
 
+## Current prototype capabilities
+
+- Role-scoped account and workspace management, invitation signup, and first Chief Architect signup.
+- Shift-gated wake/hibernation, 30-second scheduler evaluation, targeted WebSocket fleet/session events, and off-hours anomaly flags.
+- Simulated CRIU snapshot metadata and demo clock/CPU controls by default; real SSM/CRIU image capture and restore are available only with the AWS lifecycle flag and required instance/EBS configuration.
+- Current-state cost projections from configured rates and retained snapshot metadata, with scoped periodic WebSocket updates; not live AWS billing or awarded savings credits.
+- Employee portal and admin command center backed by the same API.
+
+These are a mixture of local emulation and explicitly gated AWS integration code for the five-step roadmap. See [project status](PROJECT_STATUS.md) for the exact implementation boundary and the gated checklist for deploying against the AWS $100 credit tier.
+
+## Optional AWS lifecycle configuration
+
+AWS actions are disabled unless `AWS_LIFECYCLE_ENABLED=1`. Use an IAM role (not embedded access keys) with narrowly scoped EC2, EBS, SQS, SSM, and CloudWatch permissions. Bind real `aws_instance_id` and `aws_volume_id` values when provisioning workspaces; only Chief Architects may submit those bindings. Required lifecycle configuration includes `AWS_DEFAULT_REGION`, `REQUEST_QUEUE_URL`, `INSTANCE_PROXY_URL_TEMPLATE` (for example `http://{private_ip}:8080`), `EBS_DEVICE_NAME`, `EBS_MOUNT_PATH`, `EBS_MOUNT_DEVICE`, `CRIU_TARGET_PID`, and `CRIU_CHECKPOINT_ROOT` inside the EBS mount. Off-hours AWS isolation additionally requires `AWS_QUARANTINE_SECURITY_GROUP_ID`; memory metrics require the CloudWatch Agent. Slack alerts are sent only when `SLACK_WEBHOOK_URL` is configured.
+
+Configure `EC2_HOURLY_RATES_JSON` with region/OS-appropriate On-Demand hourly rates for the instance types being billed. Defaults are illustrative estimates, not an AWS price lookup. Verify the SQS queue's retention, encryption, access policy, payload rules, and redrive behavior. Validate CRIU, SSM, mount/device mapping, proxy readiness, detach, and stop behavior in an isolated account before enabling employee traffic. Local tests mock AWS calls and never exercise live resources.
+
 ```powershell
 npm --prefix frontend run build
 docker compose up -d --build --no-deps frontend
@@ -66,7 +111,7 @@ This is a dated local-operation record, not a seed list or a restriction on futu
 - [API integration report](INTEGRATION_REPORT.md)
 - [Employee app handoff](EMPLOYEE_APP_HANDOFF.md)
 - [Contributing](CONTRIBUTING.md)
-- [Employee workspace portal docs](../employee-workspace-portal/README.md)
+- [Employee workspace portal docs](../The-Downscale-Client/README.md)
 
 ## Snapshot vault and demo controls (2026-09-20)
 

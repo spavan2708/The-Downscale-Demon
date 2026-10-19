@@ -1,15 +1,24 @@
 import os
 import tempfile
 import unittest
+import json
 from datetime import datetime
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 os.environ['DATABASE_URL'] = 'sqlite:///' + tempfile.mktemp(suffix='.db')
 os.environ['SHIFT_TIMEZONE'] = 'UTC'
 from fastapi.testclient import TestClient
 from app import app
 from auth import password_hash
 from database import SessionLocal, UserDB, InstanceDB, SnapshotDB
-from engine import in_shift
+from engine import (
+    LifecycleError,
+    _attach_volume,
+    complete_buffered_request,
+    in_shift,
+    queue_request_and_wake,
+    safe_downscale,
+)
 
 class IntegrationTests(unittest.TestCase):
     @classmethod
@@ -58,6 +67,7 @@ class IntegrationTests(unittest.TestCase):
                 self.assertIn('SNAPSHOT_Workspace_a_',dump.receive_text())
             message=fleet.receive_json()
             self.assertEqual(message['type'],'SESSION_TERMINATED'); self.assertEqual(message['instance_id'],'a')
+            self.assertIn('analytics', message)
         data=self.client.get('/api/instances',headers=self.headers('a')).json()
         self.assertEqual(data['analytics']['compute_hourly'],0)
         self.assertGreater(data['analytics']['snapshot_monthly'],0)
@@ -110,5 +120,81 @@ class IntegrationTests(unittest.TestCase):
         with SessionLocal() as db:
             db.query(InvitationDB).filter_by(user_id='expired').update({'expires_at':0}); db.commit()
         self.assertEqual(self.client.post('/api/auth/signup',json={**body,'user_id':'expired','invitation_token':invitation['invitation_token']}).status_code,400)
+
+    def test_08_edge_queue_and_wake_wrapper(self):
+        sqs = MagicMock()
+        def receive_message(**kwargs):
+            envelope = json.loads(sqs.send_message.call_args.kwargs['MessageBody'])
+            return {'Messages': [{
+                'Body': json.dumps(envelope),
+                'ReceiptHandle': 'receipt',
+            }]}
+        sqs.receive_message.side_effect = receive_message
+        instance = SimpleNamespace(
+            id='workspace',
+            aws_instance_id='i-12345678',
+            state='hibernated',
+        )
+        with patch.dict(os.environ, {
+            'AWS_LIFECYCLE_ENABLED': '1',
+            'REQUEST_QUEUE_URL': 'https://sqs.us-east-1.amazonaws.com/123/requests',
+        }), patch('engine._aws_client', return_value=sqs), patch('engine.wake_instance') as wake:
+            request_id = queue_request_and_wake(None, instance, {'method': 'GET', 'path': '/health'})
+        self.assertTrue(request_id)
+        sqs.send_message.assert_called_once()
+        envelope = json.loads(sqs.send_message.call_args.kwargs['MessageBody'])
+        self.assertEqual(envelope['request_id'], request_id)
+        self.assertEqual(envelope['request']['path'], '/health')
+        sqs.receive_message.side_effect = receive_message
+        with patch.dict(os.environ, {
+            'AWS_LIFECYCLE_ENABLED': '1',
+            'REQUEST_QUEUE_URL': 'https://sqs.us-east-1.amazonaws.com/123/requests',
+        }), patch('engine._aws_client', return_value=sqs):
+            complete_buffered_request(request_id)
+        sqs.delete_message.assert_called_once()
+        wake.assert_called_once_with(None, instance)
+
+    def test_09_downscale_persists_criu_metadata(self):
+        with SessionLocal() as db:
+            db.query(SnapshotDB).filter_by(instance_id='a').delete()
+            instance = db.get(InstanceDB, 'a')
+            instance.state = 'running'
+            with patch.dict(os.environ, {'AWS_LIFECYCLE_ENABLED': '1'}), patch(
+                'engine._aws_downscale',
+                return_value=('/mnt/checkpoints/capture-1', 512.0, 20.0, '100 1 bash'),
+            ):
+                filename = safe_downscale(db, instance)
+                db.commit()
+            snapshot = db.query(SnapshotDB).filter_by(instance_id='a').one()
+            self.assertTrue(filename.startswith('SNAPSHOT_Workspace_a_'))
+            self.assertEqual(snapshot.memory_footprint_mb, 512)
+            self.assertEqual(snapshot.size_mb, 20)
+            self.assertEqual(snapshot.snapshot_ref, '/mnt/checkpoints/capture-1')
+            self.assertEqual(json.loads(snapshot.process_tree), '100 1 bash')
+            self.assertEqual(instance.state, 'hibernated')
+
+    def test_10_ebs_attachment_must_belong_to_workspace(self):
+        instance = SimpleNamespace(
+            id='workspace',
+            aws_instance_id='i-12345678',
+            aws_volume_id='vol-12345678',
+        )
+        ec2 = MagicMock()
+        ec2.describe_volumes.return_value = {'Volumes': [{
+            'State': 'in-use',
+            'Attachments': [{
+                'State': 'attached',
+                'InstanceId': 'i-87654321',
+            }],
+        }]}
+        with patch('engine._aws_client', return_value=ec2):
+            with self.assertRaises(LifecycleError):
+                _attach_volume(ec2, instance)
+        ec2.attach_volume.assert_not_called()
+
+    def test_11_proxy_is_disabled_without_explicit_aws_opt_in(self):
+        with patch.dict(os.environ, {'AWS_LIFECYCLE_ENABLED': '0'}):
+            response = self.client.get('/proxy/a/health', headers=self.headers('a'))
+        self.assertEqual(response.status_code, 503)
 
 if __name__ == '__main__': unittest.main()
