@@ -46,11 +46,22 @@ def password_hash(password):
     digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex()
     return f'{salt}:{digest}'
 
+
 def verify_password(password, encoded):
     if not encoded:
         return False
-    salt, digest = encoded.split(':')
-    return hmac.compare_digest(digest, hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex())
+    try:
+        salt, digest = encoded.split(':')
+        return hmac.compare_digest(digest, hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000).hex())
+    except Exception:
+        return False
+
+
+# Aliases for CLI scripts, unit tests, and cross-module imports
+hash_password = password_hash
+get_password_hash = password_hash
+hash_pw = password_hash
+
 
 def authenticate(token):
     with SessionLocal() as db:
@@ -61,10 +72,12 @@ def authenticate(token):
         db.expunge(user)
         return user
 
+
 def current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
     if not credentials:
         raise HTTPException(401, 'Bearer token required')
     return authenticate(credentials.credentials)
+
 
 def visible_query(db, user):
     query = db.query(InstanceDB)

@@ -8,6 +8,13 @@ const groups = [
   {key: 'hibernated', label: 'Hibernated', color: '#4975c6', matches: state => ['hibernated', 'stopped'].includes(state)},
   {key: 'quarantined', label: 'Quarantined', color: '#c64d3e', matches: state => state === 'isolated'},
 ];
+const localhost = typeof window !== 'undefined' && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+const demoFleet = [
+  {id:'local-demo-alpha',name:'DEV-SANDBOX-ALPHA',type:'t3.medium',state:'running',cpu:38.4,memory_percent:58.6,hourly_rate:0.0416,shift_start:'09:00',shift_end:'18:00',access_mode:true,active_user:'Alex Chen',owner:'demo-employee'},
+  {id:'local-demo-staging',name:'FASTAPI-MICROSERVICE-STAGING',type:'c5.xlarge',state:'hibernated',cpu:0,memory_percent:36.8,hourly_rate:0.17,shift_start:'08:00',shift_end:'18:00',access_mode:false,owner:null},
+  {id:'local-demo-prod',name:'PROD-ANALYTICS-DB',type:'r5.large',state:'running',cpu:27.2,memory_percent:63.2,hourly_rate:0.126,shift_start:'00:00',shift_end:'00:00',access_mode:true,active_user:'Morgan Lee',owner:'demo-data-team'},
+  {id:'local-demo-ml',name:'ML-TRAINING-SANDBOX',type:'t3.medium',state:'isolated',cpu:91.2,memory_percent:82.5,hourly_rate:0.0416,shift_start:'09:00',shift_end:'18:00',access_mode:false,owner:'demo-ml-team',anomaly:true},
+];
 
 function ActivityDistribution({fleet}) {
   const [selected, setSelected] = useState(null);
@@ -124,9 +131,11 @@ function LiveTicker({fleet, runtime, runtimeSyncedAt, clockNow}) {
 }
 
 export default function AnalyticsDashboard({fleet, analytics, timezone, runtime, telemetryHistory, telemetryByWorkspace = {}, canViewRuntime, runtimeSyncedAt, clockNow, onWorkspaceSelect}) {
-  const baselineDaily = fleet.reduce((sum, item) => sum + (Number(item.hourly_rate) || 0) * 24, 0);
-  const [selectedId, setSelectedId] = useState(fleet[0]?.id || null);
-  const activeSelectedId = fleet.some(item=>item.id===selectedId) ? selectedId : fleet[0]?.id;
+  const visibleFleet = fleet.length || !localhost ? fleet : demoFleet;
+  const visibleTelemetry = Object.keys(telemetryByWorkspace).length || !localhost ? telemetryByWorkspace : {};
+  const baselineDaily = visibleFleet.reduce((sum, item) => sum + (Number(item.hourly_rate) || 0) * 24, 0);
+  const [selectedId, setSelectedId] = useState(visibleFleet[0]?.id || null);
+  const activeSelectedId = visibleFleet.some(item=>item.id===selectedId) ? selectedId : visibleFleet[0]?.id;
   const selectWorkspace = workspace => {
     setSelectedId(workspace.id);
     onWorkspaceSelect?.(workspace);
@@ -135,7 +144,7 @@ export default function AnalyticsDashboard({fleet, analytics, timezone, runtime,
     <div className="section-heading"><div><p className="eyebrow">Fleet economics</p><h2>Cloud cost &amp; access analytics</h2>
       <p>Scheduled cost comparison, observed fleet state, and live resource trends.</p></div><span className="section-count">24-hour view · rates configured by deployment</span></div>
 
-    <LiveTicker fleet={fleet} runtime={runtime} runtimeSyncedAt={runtimeSyncedAt} clockNow={clockNow}/>
+    <LiveTicker fleet={visibleFleet} runtime={runtime} runtimeSyncedAt={runtimeSyncedAt} clockNow={clockNow}/>
     <section className="daily-runtime-panel">
       <div className="daily-runtime-heading"><div><p className="eyebrow">Runtime counters</p><h3>Today’s workspace runtime</h3><p>Lifecycle intervals clipped to today in {runtime?.daily_tracking_timezone || timezone}.</p></div>
         <span className="runtime-live-label">LIVE · database intervals</span></div>
@@ -153,13 +162,13 @@ export default function AnalyticsDashboard({fleet, analytics, timezone, runtime,
       <article><span>Projected savings · / day</span><strong>{money(analytics?.daily_savings)}</strong></article>
     </div>
     <div className="analytics-chart-grid">
-      <CostCurve fleet={fleet} timezone={timezone}/>
-      <ActivityDistribution fleet={fleet}/>
+      <CostCurve fleet={visibleFleet} timezone={timezone}/>
+      <ActivityDistribution fleet={visibleFleet}/>
       <FleetLoadChart history={telemetryHistory}/>
     </div>
     <div className="candlestick-grid">
-      <CandlePanel fleet={fleet} telemetryByWorkspace={telemetryByWorkspace} metric="cpu" label="CPU" selectedId={activeSelectedId} onSelect={selectWorkspace}/>
-      <CandlePanel fleet={fleet} telemetryByWorkspace={telemetryByWorkspace} metric="memory" label="Memory" memory selectedId={activeSelectedId} onSelect={selectWorkspace}/>
+      <CandlePanel fleet={visibleFleet} telemetryByWorkspace={visibleTelemetry} metric="cpu" label="CPU" selectedId={activeSelectedId} onSelect={selectWorkspace}/>
+      <CandlePanel fleet={visibleFleet} telemetryByWorkspace={visibleTelemetry} metric="memory" label="Memory" memory selectedId={activeSelectedId} onSelect={selectWorkspace}/>
     </div>
     <p className="section-footnote">Cost curves use configured instance rates and scheduled shifts. {telemetryHistory.some(sample => sample.demo) ? 'Localhost telemetry points are illustrative demo samples, not live AWS readings.' : 'Telemetry trends are observed WebSocket samples collected only while this dashboard is connected.'} These charts are not historical CloudWatch data or billing records.</p>
   </section>;

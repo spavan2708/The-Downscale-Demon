@@ -43,7 +43,13 @@ from engine import (
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title='The Downscale Demon API')
-app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000', 'http://127.0.0.1:3000'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class LoginRequest(BaseModel):
     user_id: str
@@ -220,6 +226,7 @@ def _approve_overtime_request(db, request, user, response=None):
         'previous_shift_end': previous_end,
         'shift_end': instance.shift_end,
     })
+    emit(db, instance.id, 'SHIFT_EXTENDED', user.id, details)
     emit(db, instance.id, 'SHIFT_UPDATED', user.id, details)
     emit(db, instance.id, 'SUPPORT_REQUEST_UPDATED', user.id, f'{request.id}: approved')
     emit(db, instance.id, 'FLEET_UPDATED', user.id, 'Approved overtime shift extension')
@@ -547,6 +554,7 @@ def decide_support_request(request_id: str, req: SupportRequestDecision, user=De
 
 
 @app.post('/api/requests/{request_id}/approve')
+@app.post('/api/support/requests/{request_id}/approve')
 def approve_overtime_request(
     request_id: str,
     req: OvertimeDecisionRequest | None = None,
@@ -570,6 +578,7 @@ def approve_overtime_request(
 
 
 @app.post('/api/requests/{request_id}/reject')
+@app.post('/api/support/requests/{request_id}/reject')
 def reject_overtime_request(
     request_id: str,
     req: OvertimeDecisionRequest | None = None,

@@ -67,6 +67,12 @@ docker compose exec backend python bootstrap_admin.py ADMIN-001 "Chief Architect
 
 The script prompts for a password. First-admin API signup is rejected once an administrator exists. Managers/admins can provision users and workspaces or generate single-use invitations through the command center. Ordinary signup requires an invitation; role and team are assigned server-side.
 
+If the Chief Architect password is forgotten, reset it locally without placing the new password in shell history:
+
+```powershell
+docker compose exec backend python reset_admin_password.py CA001
+```
+
 ## Admin UI
 
 The Chief Architect and Team Lead fleet view is an executive governance dashboard with savings/active-node/threat cards, a state-colored interactive workspace matrix, CPU/memory and hourly-cost SVG charts, runtime counters, employee access controls, overtime approvals, shift editing, and an audit stream. Chief Architect-only stack deletion requires exact workspace-name confirmation; AWS deletion detaches and retains EBS data before terminating EC2. Employees retain the scoped fleet view. Edit `frontend/src/`, then rebuild; `frontend/dist/` is generated output.

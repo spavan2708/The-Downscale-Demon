@@ -44,7 +44,7 @@ export function FleetLoadChart({history = []}) {
   </section>;
 }
 
-export function CostCurve({fleet, timezone}) {
+export function CostCurve({fleet = [], timezone}) {
   const series = useMemo(() => Array.from({length: 24}, (_, hour) => {
     const baseline = fleet.reduce((sum, item) => sum + (Number(item.hourly_rate) || 0), 0);
     const managed = fleet.reduce((sum, item) => sum + (shiftOpenAtHour(item, hour) ? Number(item.hourly_rate) || 0 : 0), 0);
@@ -69,29 +69,31 @@ export function CostCurve({fleet, timezone}) {
 }
 
 export default function GovernanceDashboard({
-  fleet, analytics, governance, telemetryHistory, pingMs, currentUser, isAdmin, busy, timezone, demoMode,
+  fleet = [], analytics = {}, governance = {}, telemetryHistory = [], pingMs, currentUser, isAdmin, busy, timezone, demoMode,
   onShift, onWake, onPurge, onAccess, onDelete, onDecision,
 }) {
-  const [selectedId, setSelectedId] = useState(fleet[0]?.id || null);
+  const visibleFleet = fleet || [];
+  const visibleGovernance = governance || {};
+  const [selectedId, setSelectedId] = useState(visibleFleet[0]?.id || null);
   const [deleting, setDeleting] = useState(null);
   const [confirmation, setConfirmation] = useState('');
-  const selected = fleet.find(item => item.id === selectedId) || fleet[0];
-  const runtimeById = new Map((governance?.runtime?.workspaces || []).map(item => [item.instance_id, item]));
-  const employeeById = new Map((governance?.employees || []).map(item => [item.id, item]));
-  const runtime = governance?.runtime || {};
-  const baselineDaily = fleet.reduce((sum, item) => sum + (Number(item.hourly_rate) || 0) * 24, 0);
-  const threats = fleet.filter(item => item.anomaly || item.state === 'isolated').length;
-  const active = fleet.filter(item => activeState(item.state)).length;
-  const cpuTotal = fleet.filter(item => activeState(item.state)).reduce((sum, item) => sum + (Number(item.cpu) || 0), 0);
+  const selected = visibleFleet.find(item => item.id === selectedId) || visibleFleet[0];
+  const runtimeById = new Map((visibleGovernance?.runtime?.workspaces || []).map(item => [item.instance_id, item]));
+  const employeeById = new Map((visibleGovernance?.employees || []).map(item => [item.id, item]));
+  const runtime = visibleGovernance?.runtime || {};
+  const baselineDaily = visibleFleet.reduce((sum, item) => sum + (Number(item.hourly_rate) || 0) * 24, 0);
+  const threats = visibleFleet.filter(item => item.anomaly || item.state === 'isolated').length;
+  const active = visibleFleet.filter(item => activeState(item.state)).length;
+  const cpuTotal = visibleFleet.filter(item => activeState(item.state)).reduce((sum, item) => sum + (Number(item.cpu) || 0), 0);
   const savingsEfficiency = Number(analytics?.downscale_rate) || 0;
 
   return <div className="governance-dashboard">
     <section className="executive-section" aria-labelledby="executive-summary-title">
       <div className="governance-section-heading"><div><p className="eyebrow">Cloud governance</p><h2 id="executive-summary-title">Executive summary</h2><p>Scoped to your authorized workspaces · {currentUser.team_id || 'all teams'}</p></div><span className="governance-live-tag">LIVE GOVERNANCE</span></div>
       <div className="executive-cards">
-        <article className="executive-card savings-card"><span>Estimated credits preserved</span><strong>{money(runtime.estimated_credits_preserved_usd)}</strong><small>Since runtime tracking started · modeled compute avoidance</small></article>
-        <article className="executive-card"><span>Active nodes</span><strong>{active}<small> / {fleet.length}</small></strong><small>{active ? (cpuTotal / active).toFixed(1) : '0.0'}% average CPU across active nodes</small></article>
-        <article className="executive-card threat-card"><span>Blocked threats</span><strong>{fleet.filter(item => item.state === 'isolated').length}</strong><small>{threats ? `${threats} isolated or flagged for review` : 'No active quarantine flags'}</small></article>
+        <article className="executive-card savings-card"><span>Estimated credits preserved</span><strong>{money(runtime.estimated_credits_preserved_usd || 0)}</strong><small>Since runtime tracking started · modeled compute avoidance</small></article>
+        <article className="executive-card"><span>Active nodes</span><strong>{active}<small> / {visibleFleet.length}</small></strong><small>{active ? (cpuTotal / active).toFixed(1) : '0.0'}% average CPU across active nodes</small></article>
+        <article className="executive-card threat-card"><span>Blocked threats</span><strong>{visibleFleet.filter(item => item.state === 'isolated').length}</strong><small>{threats ? `${threats} isolated or flagged for review` : 'No active quarantine flags'}</small></article>
         <article className="executive-card"><span>Downscale efficiency</span><strong>{savingsEfficiency.toFixed(1)}%</strong><small>Hibernated share of non-exempt workspaces</small></article>
       </div>
       <div className="spend-comparison">
@@ -111,9 +113,9 @@ export default function GovernanceDashboard({
       <div className="governance-section-heading"><div><p className="eyebrow">Workspace operations</p><h2 id="fleet-map-title">Fleet map &amp; command grid</h2><p>Select a workspace to inspect its state, runtime, and available controls.</p></div><div className="fleet-map-legend"><span><i className="state-dot state-active"/>Active</span><span><i className="state-dot state-hibernated"/>Hibernating</span><span><i className="state-dot state-quarantined"/>Quarantined</span><span><i className="state-dot state-access"/>In access mode</span></div></div>
       <div className="fleet-command-layout">
         <div className="fleet-matrix" role="list" aria-label="Workspace activity matrix">
-          {fleet.map(item => <article role="listitem" key={item.id} className="fleet-matrix-card">
+          {visibleFleet.map(item => <article role="listitem" key={item.id} className="fleet-matrix-card">
             <button type="button" aria-pressed={selected?.id === item.id} className={`fleet-matrix-cell ${selected?.id === item.id ? 'is-selected' : ''} matrix-${item.state}`} onClick={() => setSelectedId(item.id)}>
-              <span className="state-dot"/><strong>{item.name}</strong><small>{item.owner || 'Unassigned'} · {statusName(item.state)}</small>
+              <span className="state-dot"/><strong>{item.name}</strong><small>{item.owner || 'Unassigned'} · {item.anomaly ? 'Anomaly detected' : statusName(item.state)}</small>
               {item.access_mode && <span className="access-mode-badge">IN ACCESS MODE · {item.active_user || item.owner}</span>}
               <small>CPU {Number(item.cpu || 0).toFixed(1)}% · Memory {item.memory_percent == null ? '—' : `${Number(item.memory_percent).toFixed(1)}%`}</small>
               <span className="matrix-load-track" aria-label={`CPU load ${Number(item.cpu || 0).toFixed(1)} percent`}><span style={{width: `${Math.max(0, Math.min(100, Number(item.cpu) || 0))}%`}}/></span>
@@ -121,7 +123,7 @@ export default function GovernanceDashboard({
             </button>
             {isAdmin && <button type="button" className="matrix-terminate" disabled={busy} onClick={() => {setDeleting(item); setConfirmation('');}}>Terminate &amp; Delete Workspace</button>}
           </article>)}
-          {!fleet.length && <p className="governance-empty">No authorized workspaces are allocated.</p>}
+          {!visibleFleet.length && <p className="governance-empty">No authorized workspaces are allocated.</p>}
         </div>
         {selected && <article className="workspace-command-panel">
           <header><div><p className="eyebrow">Selected workspace</p><h3>{selected.name}</h3><small>{selected.id} · {selected.type}</small></div><span className={`workspace-status status-${selected.state}`}>{statusName(selected.state)}</span></header>
@@ -139,33 +141,33 @@ export default function GovernanceDashboard({
             {(currentUser.role === 'manager' || currentUser.role === 'team_lead' || isAdmin) && <button type="button" disabled={busy || !activeState(selected.state)} onClick={() => onPurge(selected.id)}>Hibernate</button>}
             {isAdmin && <button type="button" className="command-delete-button" disabled={busy} onClick={() => {setDeleting(selected); setConfirmation('');}}>Terminate &amp; Delete Workspace</button>}
           </div>
-          <p className="runtime-provenance">{demoMode ? 'Illustrative localhost sample; actions remain local.' : `Runtime counts are derived from persisted state-transition intervals. AWS lifecycle: ${governance?.aws_lifecycle_enabled ? 'enabled' : 'disabled'}.`}</p>
+          <p className="runtime-provenance">{`Runtime counts are derived from persisted state-transition intervals. AWS lifecycle: ${visibleGovernance?.aws_lifecycle_enabled ? 'enabled' : 'disabled'}.`}</p>
         </article>}
       </div>
-      <div className="governance-charts"><FleetLoadChart history={telemetryHistory}/><CostCurve fleet={fleet} timezone={timezone}/></div>
+      <div className="governance-charts"><FleetLoadChart history={telemetryHistory}/><CostCurve fleet={visibleFleet} timezone={timezone}/></div>
     </section>
 
     <section className="granular-governance-section" aria-labelledby="governance-control-title">
       <div className="governance-section-heading"><div><p className="eyebrow">People, policy &amp; evidence</p><h2 id="governance-control-title">Granular governance &amp; audit</h2><p>Team Leads can manage their team; stack termination is Chief Architect-only.</p></div></div>
       <div className="governance-columns">
         <section className="governance-subpanel"><h3>Employee access</h3><p className="panel-subtitle">Blocking revokes active sessions and requests workspace downscale immediately.</p>
-          {(governance?.employees || []).filter(employee => employee.role === 'employee').map(employee => <article className="employee-governance-row" key={employee.id}>
+          {(visibleGovernance?.employees || []).filter(employee => employee.role === 'employee').map(employee => <article className="employee-governance-row" key={employee.id}>
             <div><strong>{employee.name}</strong><small>{employee.id} · {employee.workspace_count} workspace(s)</small></div>
             <button type="button" className={employee.access_blocked ? 'access-toggle is-blocked' : 'access-toggle'} disabled={busy} aria-pressed={employee.access_blocked} onClick={() => onAccess(employee.id, !employee.access_blocked)}>{employee.access_blocked ? 'Access blocked · restore' : 'Emergency Revoke / Lockout'}</button>
           </article>)}
-          {!governance?.employees?.some(employee => employee.role === 'employee') && <p className="governance-empty">No employees in this governance scope.</p>}
+          {!visibleGovernance?.employees?.some(employee => employee.role === 'employee') && <p className="governance-empty">No employees in this governance scope.</p>}
         </section>
         <section className="governance-subpanel" id="overtime-approvals"><h3>Pending shift extensions</h3><p className="panel-subtitle">Overtime approvals update the employee’s shift bounds immediately.</p>
-          {(governance?.requests || []).filter(request=>request.request_type==='overtime' && request.status==='open').map(request => <article className="overtime-request-row" key={request.id}>
+          {(visibleGovernance?.requests || []).filter(request=>request.request_type==='overtime' && request.status==='open').map(request => <article className="overtime-request-row" key={request.id}>
             <div><span className="request-type">SHIFT EXTENSION · {request.extension_hours ? `+${request.extension_hours} HOURS` : 'DURATION NOT SPECIFIED'}</span><strong>{request.subject}</strong><small>{employeeById.get(request.owner_id)?.name || request.owner_id} · {request.instance_id || 'No workspace'}</small><p>{request.details}</p></div>
-            <div className="request-actions"><button type="button" disabled={busy} onClick={() => onDecision(request.id, 'approved')}>Approve Overtime</button><button type="button" disabled={busy} onClick={() => onDecision(request.id, 'rejected')}>Reject</button></div>
+            <div className="request-actions"><button type="button" disabled={busy} onClick={() => onDecision(request.id, 'approved')}>Approve (+{request.extension_hours || 2} Hrs)</button><button type="button" disabled={busy} onClick={() => onDecision(request.id, 'rejected')}>Reject</button></div>
           </article>)}
-          {!(governance?.requests || []).some(request=>request.request_type==='overtime' && request.status==='open') && <p className="governance-empty">No pending shift extensions.</p>}
+          {!(visibleGovernance?.requests || []).some(request=>request.request_type==='overtime' && request.status==='open') && <p className="governance-empty">No pending shift extensions.</p>}
         </section>
       </div>
-      <section className="governance-subpanel audit-panel"><div className="audit-heading"><div><h3>Governance audit log</h3><p className="panel-subtitle">Latest lifecycle, access, request, and policy events in your scope.</p></div><span>{governance?.audit?.length || 0} events</span></div>
-        <div className="audit-list">{(governance?.audit || []).slice(0, 30).map(event => <article className="audit-event" key={event.id}><time dateTime={event.created_at}>{event.created_at ? new Date(event.created_at).toLocaleString() : 'Time unavailable'}</time><strong>{event.event_type.replaceAll('_', ' ')}</strong><span>{event.details || event.instance_id || 'Platform event'}</span><small>{event.actor_id ? `by ${event.actor_id}` : 'system'}</small></article>)}
-          {!governance?.audit?.length && <p className="governance-empty">Audit events will appear as governance actions occur.</p>}</div>
+      <section className="governance-subpanel audit-panel"><div className="audit-heading"><div><h3>Governance audit log</h3><p className="panel-subtitle">Latest lifecycle, access, request, and policy events in your scope.</p></div><span>{visibleGovernance?.audit?.length || 0} events</span></div>
+        <div className="audit-list">{(visibleGovernance?.audit || []).slice(0, 30).map(event => <article className="audit-event" key={event.id}><time dateTime={event.created_at}>{event.created_at ? new Date(event.created_at).toLocaleString() : 'Time unavailable'}</time><strong>{event.event_type.replaceAll('_', ' ')}</strong><span>{event.details || event.instance_id || 'Platform event'}</span><small>{event.actor_id ? `by ${event.actor_id}` : 'system'}</small></article>)}
+          {!visibleGovernance?.audit?.length && <p className="governance-empty">Audit events will appear as governance actions occur.</p>}</div>
       </section>
     </section>
 
