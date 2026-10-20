@@ -39,20 +39,39 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+      EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Validate deploy secrets
+        id: deploy_check
+        run: |
+          if [ -z "$EC2_HOST" ] || [ -z "$EC2_USERNAME" ] || [ -z "$EC2_SSH_KEY" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping EC2 deployment because one or more required secrets are missing."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip deploy when secrets are missing
+        if: steps.deploy_check.outputs.ready != 'true'
+        run: echo "EC2 deployment skipped."
+
       - name: Deploy via SSH to EC2
+        if: steps.deploy_check.outputs.ready == 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ env.EC2_HOST }}
+          username: ${{ env.EC2_USERNAME }}
+          key: ${{ env.EC2_SSH_KEY }}
           port: 22
           script: |
-            cd /home/${{ secrets.EC2_USERNAME }}/The-Downscale-Demon || exit 1
+            cd /home/${{ env.EC2_USERNAME }}/The-Downscale-Demon || exit 1
             git fetch origin main
             git reset --hard origin/main
             docker compose up -d --build
