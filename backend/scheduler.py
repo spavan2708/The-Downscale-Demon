@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 
 from celery import Celery
+from sqlalchemy import func
 from database import SessionLocal, InstanceDB
 from engine import (
     cloud_metrics,
@@ -28,7 +29,7 @@ def evaluate_shifts():
     with SessionLocal() as db:
         instances = (
             db.query(InstanceDB)
-            .filter(InstanceDB.state.in_(['running', 'idle']))
+            .filter(func.lower(InstanceDB.state).in_(['running', 'idle']))
             .all()
         )
         for instance in instances:

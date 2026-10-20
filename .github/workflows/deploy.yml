@@ -1,0 +1,60 @@
+name: Build, Test, and Deploy - The Downscale Demon
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start Docker Compose Stack
+        run: docker compose up -d --build
+
+      - name: Wait for Services to be Healthy
+        run: |
+          echo "Waiting for database and redis healthchecks..."
+          sleep 10
+          docker compose ps
+
+      - name: Execute Backend Integration Tests
+        run: docker compose exec -T backend python test_integration.py
+
+      - name: Tear Down Test Stack
+        if: always()
+        run: docker compose down -v
+
+  deploy:
+    name: Deploy to EC2 Instance
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            cd /home/${{ secrets.EC2_USERNAME }}/The-Downscale-Demon || exit 1
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose up -d --build
+            docker image prune -f
+            docker compose ps

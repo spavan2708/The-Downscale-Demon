@@ -8,10 +8,11 @@ DB_DIR = os.getenv('DB_DIR', str(Path(__file__).parent / 'db'))
 os.makedirs(DB_DIR, exist_ok=True)
 database_url = os.getenv('DATABASE_URL', f'sqlite:///{Path(DB_DIR) / "downscale.db"}')
 if database_url.startswith('postgresql://'):
-    database_url = database_url.replace('postgresql://', 'postgresql+psycopg://', 1)
+    database_url = database_url.replace('postgresql://', 'postgresql+psycopg2://', 1)
 connect_args = {'check_same_thread': False} if database_url.startswith('sqlite:') else {}
 engine = create_engine(database_url, connect_args=connect_args)
 Base = declarative_base()
+
 
 class UserDB(Base):
     __tablename__ = 'users'
@@ -21,6 +22,7 @@ class UserDB(Base):
     team_id = Column(String)
     password_hash = Column(String)
     access_blocked = Column(Boolean, nullable=False, default=False)
+
 
 class InstanceDB(Base):
     __tablename__ = 'instances'
@@ -44,6 +46,7 @@ class InstanceDB(Base):
     demo_enabled = Column(Boolean, default=False)
     demo_time = Column(String, nullable=True)
 
+
 class SnapshotDB(Base):
     __tablename__ = 'snapshots'
     id = Column(String, primary_key=True)
@@ -57,12 +60,14 @@ class SnapshotDB(Base):
     snapshot_ref = Column(String, nullable=True)
     process_tree = Column(Text, nullable=True)
 
+
 class SessionDB(Base):
     __tablename__ = 'sessions'
     token_hash = Column(String, primary_key=True)
     user_id = Column(String)
     expires_at = Column(Float)
     instance_id = Column(String, nullable=True)
+
 
 class EventDB(Base):
     __tablename__ = 'events'
@@ -73,6 +78,7 @@ class EventDB(Base):
     details = Column(Text, nullable=True)
     created_at = Column(String, nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
 
+
 class RuntimeIntervalDB(Base):
     __tablename__ = 'runtime_intervals'
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -80,6 +86,7 @@ class RuntimeIntervalDB(Base):
     state = Column(String, nullable=False)
     started_at = Column(String, nullable=False)
     ended_at = Column(String, nullable=False)
+
 
 class InvitationDB(Base):
     __tablename__ = 'invitations'
@@ -90,6 +97,7 @@ class InvitationDB(Base):
     workspaces_json = Column(String)
     expires_at = Column(Float)
     used = Column(Boolean, default=False)
+
 
 class SupportRequestDB(Base):
     __tablename__ = 'support_requests'
@@ -106,6 +114,7 @@ class SupportRequestDB(Base):
     created_at = Column(String, nullable=False)
     updated_at = Column(String, nullable=False)
 
+
 class AnnouncementDB(Base):
     __tablename__ = 'announcements'
     id = Column(String, primary_key=True)
@@ -117,8 +126,8 @@ class AnnouncementDB(Base):
     created_at = Column(String, nullable=False)
     expires_at = Column(String, nullable=True)
 
+
 Base.metadata.create_all(engine)
-# Serialize additive SQLite migrations across the API and scheduler processes.
 with engine.begin() as connection:
     additions = {
         'users': {'team_id': 'VARCHAR', 'password_hash': 'VARCHAR', 'access_blocked': 'BOOLEAN DEFAULT FALSE'},
@@ -173,7 +182,10 @@ with engine.begin() as connection:
         connection.execute(text(
             "UPDATE events SET created_at = CURRENT_TIMESTAMP::text WHERE created_at IS NULL"
         ))
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 def get_db():
     with SessionLocal() as db:
