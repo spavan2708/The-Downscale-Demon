@@ -14,11 +14,13 @@ from types import SimpleNamespace
 from typing import Literal
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
+import redis
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from database import engine as database_engine, SessionLocal, UserDB, InstanceDB, SnapshotDB, SessionDB, EventDB, InvitationDB, SupportRequestDB, AnnouncementDB
 from auth import current_user, authenticate, password_hash, verify_password, visible_query, require_instance, role_rank
+from agent_control import agent_websocket, enabled as agent_control_enabled, enqueue_pause, rotate_credential
 from engine import (
     LifecycleError,
     analytics,
@@ -73,6 +75,56 @@ class DeleteWorkspaceRequest(BaseModel):
 
 class StateChangeRequest(TargetRequest):
     target_state: Literal['running', 'hibernated', 'stopped']
+
+    @field_validator('target_state', mode='before')
+    @classmethod
+    def normalize_command(cls, value):
+        return {'Wake': 'running', 'Sleep': 'hibernated', 'Terminate': 'stopped'}.get(value, value) if isinstance(value, str) else value
+
+
+class TelemetryPacket(TargetRequest):
+    cpu_percent: float = Field(ge=0, le=100, allow_inf_nan=False)
+    memory_mb: float = Field(ge=0, allow_inf_nan=False)
+    memory_percent: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    observed_at: datetime
+
+    @field_validator('observed_at')
+    @classmethod
+    def validate_observed_at(cls, value):
+        if value.tzinfo is None or value.timestamp() > time.time() + 60:
+            raise ValueError('observed_at must include a timezone and cannot be in the future')
+        return value.astimezone(timezone.utc)
+
+
+telemetry_cache = redis.Redis.from_url(
+    os.getenv('REDIS_URL', 'redis://redis:6379/0'),
+    socket_connect_timeout=0.5, socket_timeout=0.5,
+)
+
+
+def ingest_telemetry(payload, user):
+    packet = TelemetryPacket.model_validate(payload)
+    with SessionLocal() as db:
+        instance = require_instance(db, user, packet.instance_id)
+        instance = db.query(InstanceDB).filter_by(id=instance.id).with_for_update().one()
+        observed_at = packet.observed_at.isoformat()
+        if instance.telemetry_updated_at:
+            previous = datetime.fromisoformat(instance.telemetry_updated_at)
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=timezone.utc)
+            if packet.observed_at <= previous:
+                return {'type': 'TELEMETRY_ACK', 'instance_id': instance.id, 'accepted': False}
+        instance.cpu_load = packet.cpu_percent
+        instance.memory_usage_mb = packet.memory_mb
+        instance.memory_percent = packet.memory_percent
+        instance.telemetry_updated_at = observed_at
+        emit(db, instance.id, 'TELEMETRY_UPDATED', user.id, json.dumps(packet.model_dump(mode='json')))
+        db.commit()
+        try:
+            telemetry_cache.setex(f'telemetry:{instance.id}', 120, packet.model_dump_json())
+        except redis.RedisError:
+            logger.warning('Telemetry cache unavailable for %s', instance.id)
+        return {'type': 'TELEMETRY_ACK', 'instance_id': instance.id, 'accepted': True}
 
 class WorkspaceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80, pattern=r'^[A-Za-z0-9 _-]+$')
@@ -842,7 +894,7 @@ def assign_workspace(instance_id: str, req: WorkspaceAssignmentRequest, user=Dep
     if role_rank(user) < 3:
         raise HTTPException(403, 'Chief Architect required to assign an unallocated workspace')
     with SessionLocal() as db:
-        instance = db.get(InstanceDB, instance_id)
+        instance = db.query(InstanceDB).filter_by(id=instance_id).with_for_update().first()
         employee = db.get(UserDB, req.user_id)
         if not instance:
             raise HTTPException(404, 'Workspace not found')
@@ -854,6 +906,20 @@ def assign_workspace(instance_id: str, req: WorkspaceAssignmentRequest, user=Dep
         emit(db, instance.id, 'FLEET_UPDATED', user.id, f'Workspace assigned to {employee.id}')
         db.commit()
         return {'instance_id': instance.id, 'owner_id': employee.id}
+
+
+@app.post('/api/workspaces/{instance_id}/agent-credential')
+def issue_agent_credential(instance_id: str, user=Depends(current_user)):
+    if role_rank(user) < 3:
+        raise HTTPException(403, 'Chief Architect required')
+    if not agent_control_enabled():
+        raise HTTPException(503, 'Agent control is disabled')
+    return {'instance_id': instance_id, 'agent_token': rotate_credential(instance_id)}
+
+
+@app.websocket('/ws/agent/{instance_id}')
+async def workspace_agent_socket(websocket: WebSocket, instance_id: str):
+    await agent_websocket(websocket, instance_id)
 
 @app.get('/api/governance/overview')
 def governance_overview(user=Depends(current_user)):
@@ -1008,6 +1074,10 @@ def change_state(req: StateChangeRequest, user=Depends(current_user)):
             raise HTTPException(403, 'SHIFT LOCKED')
         if req.target_state == 'running' and inst.state == 'isolated':
             raise HTTPException(423, 'Workspace is isolated; Chief Architect approval and AWS review are required')
+        if agent_control_enabled() and req.target_state in ('hibernated', 'stopped') and inst.state in ('running', 'idle'):
+            command = enqueue_pause(db, inst.id, req.target_state)
+            db.commit()
+            return dict(status='PENDING', new_state=inst.state, command_id=command.id)
         if req.target_state == 'hibernated':
             downscale_or_503(db, inst)
         elif req.target_state == 'stopped':
@@ -1143,6 +1213,8 @@ async def fleet_websocket(websocket: WebSocket):
                             actor_id=event.actor_id,
                             details=event.details,
                             analytics=current_analytics,
+                            **({'telemetry': [item for item in telemetry if item['instance_id'] == event.instance_id]}
+                               if event.event_type == 'TELEMETRY_UPDATED' else {}),
                         ))
                 if time.monotonic() - last_finops_push >= 1:
                     await websocket.send_json({
@@ -1171,6 +1243,21 @@ async def fleet_websocket(websocket: WebSocket):
                         'sent_at': payload.get('sent_at'),
                         'server_time': datetime.now(timezone.utc).isoformat(),
                     })
+                elif isinstance(payload, dict) and payload.get('type') == 'TELEMETRY':
+                    if agent_control_enabled():
+                        await websocket.send_json({'type': 'ERROR', 'status': 403, 'detail': 'Use the workspace agent for telemetry'})
+                    else:
+                        try:
+                            await websocket.send_json(ingest_telemetry(payload, user))
+                        except ValidationError:
+                            await websocket.send_json({'type': 'ERROR', 'status': 422, 'detail': 'Invalid telemetry packet'})
+                        except HTTPException as exc:
+                            await websocket.send_json({'type': 'ERROR', 'status': exc.status_code, 'detail': exc.detail})
+                elif isinstance(payload, dict) and payload.get('type') == 'ACTIVITY' and role_rank(user) == 1:
+                    with SessionLocal() as activity_db:
+                        instance = require_instance(activity_db, user, str(payload.get('instance_id', '')))
+                        instance.portal_activity_at = datetime.now(timezone.utc).isoformat()
+                        activity_db.commit()
             except asyncio.TimeoutError:
                 pass
     except HTTPException:

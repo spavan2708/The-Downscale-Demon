@@ -41,6 +41,10 @@ class InstanceDB(Base):
     memory_usage_mb = Column(Float, nullable=True)
     memory_percent = Column(Float, nullable=True)
     telemetry_updated_at = Column(String, nullable=True)
+    activity_observed_at = Column(String, nullable=True)
+    last_user_activity_at = Column(String, nullable=True)
+    portal_activity_at = Column(String, nullable=True)
+    low_cpu_since = Column(String, nullable=True)
     shift_start = Column(String, default='09:00')
     shift_end = Column(String, default='18:00')
     demo_enabled = Column(Boolean, default=False)
@@ -77,6 +81,26 @@ class EventDB(Base):
     actor_id = Column(String, nullable=True)
     details = Column(Text, nullable=True)
     created_at = Column(String, nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class AgentCredentialDB(Base):
+    __tablename__ = 'agent_credentials'
+    instance_id = Column(String, primary_key=True)
+    token_hash = Column(String, nullable=False)
+    issued_at = Column(String, nullable=False)
+
+
+class AgentCommandDB(Base):
+    __tablename__ = 'agent_commands'
+    id = Column(String, primary_key=True)
+    instance_id = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)
+    target_state = Column(String, nullable=False, default='hibernated')
+    status = Column(String, nullable=False, default='pending')
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(String, nullable=False)
+    updated_at = Column(String, nullable=False)
+    last_error = Column(Text, nullable=True)
 
 
 class RuntimeIntervalDB(Base):
@@ -138,6 +162,10 @@ with engine.begin() as connection:
             'memory_usage_mb': 'FLOAT',
             'memory_percent': 'FLOAT',
             'telemetry_updated_at': 'VARCHAR',
+            'activity_observed_at': 'VARCHAR',
+            'last_user_activity_at': 'VARCHAR',
+            'portal_activity_at': 'VARCHAR',
+            'low_cpu_since': 'VARCHAR',
             'state_since': 'VARCHAR',
         },
         'sessions': {'instance_id': 'VARCHAR'},

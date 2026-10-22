@@ -499,4 +499,81 @@ class IntegrationTests(unittest.TestCase):
             db.get(InstanceDB, 'a').aws_instance_id = None
             db.commit()
 
+    def test_zz_assignment_and_client_telemetry(self):
+        from datetime import timezone
+        def receive_type(socket, expected):
+            for _ in range(20):
+                frame = socket.receive_json()
+                if frame['type'] == expected:
+                    return frame
+            self.fail(f'Missing WebSocket frame: {expected}')
+
+        self.tokens['a'] = self.client.post('/api/auth/login', json={
+            'user_id': 'a', 'password': 'test-password-123',
+        }).json()['access_token']
+        created = self.client.post('/api/workspaces', headers=self.headers('admin'), json={
+            'name': 'Client telemetry regression', 'instance_type': 't3.medium',
+            'shift_start': '00:00', 'shift_end': '00:00',
+        })
+        self.assertEqual(created.status_code, 201)
+        identifier = created.json()['instance_id']
+        endpoint = f'/api/workspaces/{identifier}/assign'
+        self.assertEqual(self.client.post(endpoint, headers=self.headers('a'), json={'user_id': 'a'}).status_code, 403)
+        self.assertEqual(self.client.post(endpoint, headers=self.headers('admin'), json={'user_id': 'a'}).status_code, 200)
+        self.assertEqual(self.client.post(endpoint, headers=self.headers('admin'), json={'user_id': 'b'}).status_code, 409)
+        for uid, visible in [('a', True), ('lead', True), ('b', False)]:
+            fleet = self.client.get('/api/instances', headers=self.headers(uid)).json()['fleet']
+            self.assertEqual(identifier in {item['id'] for item in fleet}, visible)
+        for command, state in [('Wake', 'running'), ('Sleep', 'hibernated'), ('Terminate', 'stopped')]:
+            response = self.client.post('/api/instance/state', headers=self.headers('a'), json={
+                'instance_id': identifier, 'target_state': command,
+            })
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['new_state'], state)
+        packet = {'type': 'TELEMETRY', 'instance_id': identifier, 'cpu_percent': 42,
+                  'memory_mb': 1024, 'memory_percent': 50,
+                  'observed_at': datetime.now(timezone.utc).isoformat()}
+        with patch('app.telemetry_cache') as cache:
+            with self.client.websocket_connect('/ws/fleet') as admin_socket:
+                admin_socket.send_json({'token': self.tokens['admin']})
+                self.assertEqual(admin_socket.receive_json()['reason'], 'connected')
+                with self.client.websocket_connect('/ws/fleet') as client_socket:
+                    client_socket.send_json({'token': self.tokens['a']})
+                    self.assertEqual(client_socket.receive_json()['reason'], 'connected')
+                    client_socket.send_json(packet)
+                    self.assertTrue(receive_type(client_socket, 'TELEMETRY_ACK')['accepted'])
+                    for _ in range(20):
+                        update = admin_socket.receive_json()
+                        if update['type'] == 'TELEMETRY_UPDATED':
+                            break
+                    self.assertEqual(update['telemetry'][0]['instance_id'], identifier)
+                    self.assertEqual(update['telemetry'][0]['memory_mb'], 1024)
+                    # Drain the sender's event before checking subsequent replies.
+                    receive_type(client_socket, 'TELEMETRY_UPDATED')
+                    client_socket.send_json(packet)
+                    self.assertFalse(receive_type(client_socket, 'TELEMETRY_ACK')['accepted'])
+                    client_socket.send_json({**packet, 'cpu_percent': 101})
+                    self.assertEqual(receive_type(client_socket, 'ERROR')['status'], 422)
+                    client_socket.send_json({**packet, 'observed_at': datetime.now().isoformat()})
+                    self.assertEqual(receive_type(client_socket, 'ERROR')['status'], 422)
+                    client_socket.send_json({**packet, 'instance_id': 'b'})
+                    self.assertEqual(receive_type(client_socket, 'ERROR')['status'], 404)
+            cache.setex.assert_called_once()
+        with SessionLocal() as db:
+            instance = db.get(InstanceDB, identifier)
+            self.assertEqual(instance.cpu_load, 42)
+            self.assertEqual(instance.memory_usage_mb, 1024)
+            instance.state = 'running'
+            db.commit()
+        from scheduler import evaluate_shifts
+        with patch('scheduler.cloud_metrics', return_value={'cpu': None}) as cloud:
+            evaluate_shifts()
+            self.assertNotIn(identifier, [call.args[0].id for call in cloud.call_args_list])
+        with SessionLocal() as db:
+            instance = db.get(InstanceDB, identifier)
+            self.assertEqual(instance.memory_usage_mb, 1024)
+            self.assertEqual(instance.telemetry_updated_at, packet['observed_at'])
+            db.delete(instance)
+            db.commit()
+
 if __name__ == '__main__': unittest.main()

@@ -35,6 +35,16 @@ The legacy `POST /api/login` combines credential authentication and waking an ow
 
 ## Live synchronization
 
+Client telemetry contract (2026-10-22): after the token frame on `/ws/fleet`, send:
+
+```json
+{"type":"TELEMETRY","instance_id":"i-...","cpu_percent":42.0,"memory_mb":1024,"memory_percent":50,"observed_at":"2026-10-22T10:00:00+00:00"}
+```
+
+`memory_percent` is optional. Observations require timezone-aware timestamps, finite nonnegative metrics, and percentages at most 100. While agent control is disabled, the server checks workspace access and replies with `TELEMETRY_ACK` and `accepted`; duplicate or older observations return `accepted:false`. Invalid packets return `ERROR` with status 422, inaccessible workspaces status 404. Accepted observations persist in the database, cache in Redis for 120 seconds when available, and broadcast scoped `TELEMETRY_UPDATED` frames with a `telemetry` array. Recent samples feed the existing Celery shift/anomaly evaluation. Redis outages do not discard database observations. Once agent control is enabled, telemetry must come through the separate credentialed workspace-agent socket; employee portal sockets can send `ACTIVITY` heartbeats but cannot publish resource metrics.
+
+For unallocated workspaces, a Chief Architect calls `POST /api/workspaces/{instance_id}/assign` with `{"user_id":"EMP001"}`. The persisted binding is `owner_id`; employee fleet access follows this owner and Team Leads see their team's owners. State requests accept `Wake`, `Sleep`, and `Terminate` as aliases for `running`, `hibernated`, and `stopped`. Wake still enforces shifts. Terminate ends the session using the existing stopped-state flow; permanent workspace deletion uses the separate Chief Architect deletion route.
+
 Connect `/ws/fleet`; immediately send the first frame `{"token":"<access_token>"}` (10-second deadline). Never put the token into the URL. Frames are JSON:
 ```json
 {"type":"FLEET_UPDATED","instance_id":null,"reason":"connected"}

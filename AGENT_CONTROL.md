@@ -1,0 +1,19 @@
+# Workspace agent rollout
+
+The workspace agent is an opt-in extension of the existing Compose stack. `AGENT_CONTROL_ENABLED` and `AGENT_IDLE_ENABLED` default to `0`; existing employee REST and fleet WebSocket flows continue to work while they are unset. `AWS_LIFECYCLE_ENABLED=0` means a completed pause is a simulated state transition, not an EC2 stop.
+
+An opt-in `docker-compose.tls.yml` and `frontend/nginx.tls.conf` provide HTTPS/WSS ingress after a trusted certificate and key are placed in `./tls/fullchain.pem` and `./tls/privkey.pem`. The overlay does not close the base Compose file's direct backend, database, or Redis ports. Restrict those ports to the host/private network in the EC2 security group before public agent enrollment. Configure the Client to use the HTTPS origin and the agent to use its WSS URL. Set `AGENT_CONTROL_ENABLED=1` and `AGENT_TLS_READY=1` only after verifying those conditions. For isolated local simulation only, `AGENT_ALLOW_INSECURE=1` substitutes for the TLS-ready flag. Do not turn on agent control on the current public HTTP endpoint.
+
+## Protocol
+
+An administrator rotates a per-workspace credential with `POST /api/workspaces/{instance_id}/agent-credential`. The response returns the plaintext token once; only its SHA-256 hash is stored. Rotating it invalidates the previous token. Run this operation only through a TLS-protected API and provision the token out of band. Never commit the token or put it in a URL. The Compose deployment currently publishes plain HTTP/WS on ports 8000 and 3000, so do not enable a public agent until TLS/WSS and network restrictions are in place.
+
+The agent opens `/ws/agent/{instance_id}` and sends `{"token":"..."}` as its first frame. It sends `TELEMETRY` frames with `cpu_percent`, `memory_mb`, optional `memory_percent`, `observed_at` (timezone-aware ISO 8601), and `user_active` (boolean). The server replies `TELEMETRY_ACK` and updates PostgreSQL. Out-of-order samples are rejected. The server sends `COMMAND` with a stable `id` and `action: PREPARE_PAUSE`; the agent replies `COMMAND_ACK` with that `id`, `prepared` boolean, and optional `detail`. An affirmative acknowledgment starts the existing checkpoint/downscale path, then the server replies `COMMAND_RESULT`. Duplicate acknowledgments cannot repeat a completed downscale.
+
+With agent control enabled, manual Sleep/Terminate returns `{status: "PENDING", new_state, command_id}` until the command completes. Client views must wait for the fleet update before showing a sleeping/stopped state. A failed or absent acknowledgment leaves the workspace running; three delivery attempts or ten minutes without an agent mark the command failed and alert operators. A worker interrupted after acknowledgment marks the command failed for manual review after ten minutes. This deliberately avoids an unverified stop.
+
+## Idle gate and rollout
+
+Set `AGENT_IDLE_ENABLED=1` only after a one-workspace test. CPU must remain below 5% for 15 minutes, agent activity samples must be fresh within two minutes, and both agent user activity and portal activity must be absent for two minutes. Missing activity prevents automatic idle downscale. The existing shift evaluation still runs every 30 seconds. Employee portal connections may send `{type:"ACTIVITY",instance_id:"..."}` to `/ws/fleet` while an employee actively uses a workspace.
+
+Run the four backend test modules separately because they each configure an isolated database URL. Verify agent credential rotation, stale telemetry rejection, reconnect, command retries, safe failure, scheduler eligibility, and both portal fleet views in a Compose simulation before a production rollout. Add TLS/WSS and close public direct backend/Redis/PostgreSQL ports before installing agent credentials on managed workspaces. ALB, RDS, and EKS are later migrations; this document does not claim they are deployed.
