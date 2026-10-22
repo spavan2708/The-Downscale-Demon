@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {useAuth} from '../context/AppContext';
 const apiBase = import.meta.env.VITE_API_BASE_URL
-  || (typeof window !== 'undefined' && window.location.port === '5173' ? 'http://localhost:8000' : '');
+  || (typeof window !== 'undefined' && window.location.port === '5173' ? 'http://3.27.211.126:8000' : '');
 const websocketOrigin = apiBase
   ? apiBase.replace(/^http/, 'ws')
   : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;

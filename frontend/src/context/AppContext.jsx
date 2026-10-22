@@ -1,13 +1,13 @@
 import React, {createContext, useContext, useState} from 'react';
 
 const AuthContext = createContext();
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'http://3.27.211.126:8000';
 
 export function AuthProvider({children}) {
   const [session, setSession] = useState(null);
 
   const api = async (path, options = {}) => {
-    // Prepend http://localhost:8000 to relative API routes
+    // Prepend http://3.27.211.126:8000 to relative API routes
     const url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
 
     const response = await fetch(url, {
