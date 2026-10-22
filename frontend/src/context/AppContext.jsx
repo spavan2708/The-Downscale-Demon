@@ -1,13 +1,13 @@
 import React, {createContext, useContext, useState} from 'react';
 
 const AuthContext = createContext();
-const API_BASE_URL = 'http://3.27.211.126:8000';
+const API_BASE_URL = import.meta.env.DEV ? (import.meta.env.VITE_API_BASE_URL || '') : '';
 
 export function AuthProvider({children}) {
   const [session, setSession] = useState(null);
 
   const api = async (path, options = {}) => {
-    // Prepend http://3.27.211.126:8000 to relative API routes
+    // In production, Nginx forwards same-origin API requests to the backend.
     const url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
 
     const response = await fetch(url, {

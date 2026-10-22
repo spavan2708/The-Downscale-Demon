@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: HTTP-only ALB demo for the existing Downscale Demon EC2 Compose host. Do not send agent credentials through this listener.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-0f4ee06a1e28b81ab
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-04aaea0fc173dcdbb
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet::Id
+    Description: Choose a public subnet in a different Availability Zone from PublicSubnetA, in the same VPC.
+  InstanceId:
+    Type: AWS::EC2::Instance::Id
+    Default: i-0161002e9379ac83c
+  InstanceSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: sg-062afcb74987f9290
+
+Resources:
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTP demo ingress for Downscale Demon
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          DestinationSecurityGroupId: !Ref InstanceSecurityGroupId
+
+  AlbToInstanceIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref InstanceSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 3000
+      ToPort: 3000
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: Allow Demon ALB to reach Nginx on port 3000
+
+  DemonTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: downscale-demon-demo
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: instance
+      Targets:
+        - Id: !Ref InstanceId
+          Port: 3000
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: '200'
+
+  DemonAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: downscale-demon-demo
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref DemonAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref DemonTargetGroup
+
+Outputs:
+  DashboardUrl:
+    Description: Open this URL to demonstrate the dashboard through the ALB.
+    Value: !Sub 'http://${DemonAlb.DNSName}'
+  TargetGroupArn:
+    Value: !Ref DemonTargetGroup
